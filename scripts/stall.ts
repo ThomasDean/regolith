@@ -1,0 +1,12 @@
+import fs from 'node:fs';
+import { applyAction } from '../src/engine/game';
+import { cpuAction, explainTurn } from '../src/engine/ai/cpu';
+import { clockOf, makeCtx, mcValue, trValue, positionBreakdown } from '../src/engine/ai/value';
+let s = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+let k = 0;
+while ((s.prompt || s.phase !== 'action') && k++ < 50) s = applyAction(s, cpuAction(s, s.players[s.prompt ? s.prompt.pid : s.active].cpu));
+const pid = s.active, p = s.players[pid];
+const c = makeCtx(s, pid, { lambda: 0.3, synergy: true, tempo: false });
+console.log('gen', s.generation, 'clock', clockOf(s), 'mcv', mcValue(c).toFixed(2), 'tr', trValue(c).toFixed(1), 'res', p.res, 'prod', p.prod, 'hand', p.hand.length);
+for (const x of explainTurn(s, p.cpu).slice(0, 12)) console.log(x.v.toFixed(2), JSON.stringify(x.a).slice(0, 80));
+console.log(s.log.slice(-12).map((l: any) => l.text).join('\n'));
