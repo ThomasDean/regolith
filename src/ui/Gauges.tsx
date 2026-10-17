@@ -1,33 +1,40 @@
 import type { GameState } from '../engine/types';
+import { MAX_OCEANS, MAX_OXY, MAX_TEMP, MIN_TEMP } from '../engine/types';
 import { fmtTemp } from './format';
+import { Num } from './Fx';
 
-/** The three global parameters, drawn as instrument scales beside the map. */
+const tempFrac = (t: number) => (t - MIN_TEMP) / (MAX_TEMP - MIN_TEMP);
+
+/** The three global parameters, drawn as instrument tubes beside the map. */
 export function Gauges({ s }: { s: GameState }) {
-  const tempSteps = Array.from({ length: 20 }, (_, i) => -30 + i * 2).reverse();
-  const oxySteps = Array.from({ length: 15 }, (_, i) => i).reverse();
+  const tf = tempFrac(s.temperature);
+  const of = s.oxygen / MAX_OXY;
+  const done = (f: number) => (f >= 1 ? 'full' : '');
   return (
     <div className="gauges" aria-label="Global parameters">
-      <div className="gauge">
-        <div className="gauge-read">{fmtTemp(s.temperature)}</div>
-        <div className="gauge-scale" role="meter" aria-valuemin={-30} aria-valuemax={8} aria-valuenow={s.temperature} aria-label="Temperature">
-          {tempSteps.map((t) => (
-            <span key={t} className={`tick temp ${t <= s.temperature ? 'on' : ''} ${t === -24 || t === -20 || t === 0 ? 'bonus' : ''}`} title={t === 0 ? '0°C: place an ocean' : t === -24 || t === -20 ? `${t}°C: +1 heat production` : undefined} />
+      <div className={`gauge ${done(tf)}`}>
+        <div className="gauge-read">{s.temperature > 0 ? '+' : ''}<Num value={s.temperature} />°C</div>
+        <div className="tube temp" role="meter" aria-valuemin={MIN_TEMP} aria-valuemax={MAX_TEMP} aria-valuenow={s.temperature} aria-label="Temperature" aria-valuetext={fmtTemp(s.temperature)} style={{ ['--f' as string]: tf }}>
+          <div className="tube-fill" />
+          {Array.from({ length: 19 }, (_, i) => <span key={i} className="tube-tick" style={{ ['--p' as string]: (i + 1) / 19 }} />)}
+          {[-24, -20, 0].map((t) => (
+            <span key={t} className={`tube-bonus ${s.temperature >= t ? 'got' : ''}`} style={{ ['--p' as string]: tempFrac(t) }} title={t === 0 ? '0°C: place an ocean' : `${t}°C: +1 heat production`} />
           ))}
         </div>
         <div className="gauge-name">Temp</div>
       </div>
-      <div className="gauge">
-        <div className="gauge-read">{s.oxygen}%</div>
-        <div className="gauge-scale" role="meter" aria-valuemin={0} aria-valuemax={14} aria-valuenow={s.oxygen} aria-label="Oxygen">
-          {oxySteps.map((o) => (
-            <span key={o} className={`tick oxy ${o <= s.oxygen && o > 0 ? 'on' : ''} ${o === 8 ? 'bonus' : ''} ${o === 0 ? 'zero' : ''}`} title={o === 8 ? '8%: raise temperature' : undefined} />
-          ))}
+      <div className={`gauge ${done(of)}`}>
+        <div className="gauge-read"><Num value={s.oxygen} />%</div>
+        <div className="tube oxy" role="meter" aria-valuemin={0} aria-valuemax={MAX_OXY} aria-valuenow={s.oxygen} aria-label="Oxygen" style={{ ['--f' as string]: of }}>
+          <div className="tube-fill" />
+          {Array.from({ length: 13 }, (_, i) => <span key={i} className="tube-tick" style={{ ['--p' as string]: (i + 1) / 14 }} />)}
+          <span className={`tube-bonus ${s.oxygen >= 8 ? 'got' : ''}`} style={{ ['--p' as string]: 8 / 14 }} title="8%: raise temperature" />
         </div>
         <div className="gauge-name">O₂</div>
       </div>
-      <div className="gauge">
-        <div className="gauge-read">{s.oceans}/9</div>
-        <div className="gauge-oceans" role="meter" aria-valuemin={0} aria-valuemax={9} aria-valuenow={s.oceans} aria-label="Oceans">
+      <div className={`gauge ${s.oceans >= MAX_OCEANS ? 'full' : ''}`}>
+        <div className="gauge-read"><Num value={s.oceans} />/9</div>
+        <div className="gauge-oceans" role="meter" aria-valuemin={0} aria-valuemax={MAX_OCEANS} aria-valuenow={s.oceans} aria-label="Oceans">
           {Array.from({ length: 9 }, (_, i) => 8 - i).map((i) => <span key={i} className={`ocean-dot ${i < s.oceans ? 'on' : ''}`} />)}
         </div>
         <div className="gauge-name">Oceans</div>

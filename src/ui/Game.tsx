@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Action, GameState, Payment, Prompt, StdProject } from '../engine/types';
 import { MAX_TEMP } from '../engine/types';
 import { applyAction } from '../engine/game';
@@ -16,6 +16,7 @@ import { Gauges } from './Gauges';
 import { Players, ResourceGrid } from './Players';
 import { fmtTemp, RES_LABEL } from './format';
 import { cloudEnabled, currentCloudId, putSave, useSession } from '../cloud';
+import { BannerView, CardShowcase, Confetti, diffEvents, FxContext, loadFxSetting, saveFxSetting, Toasts, type Banner, type Showcase, type Toast } from './Fx';
 
 const SAVE_KEY = 'regolith-save-v1';
 export function saveGame(s: GameState) {
@@ -50,7 +51,9 @@ export function Game({ initial, onExit }: { initial: GameState; onExit: () => vo
   const over = s.phase === 'over';
   const myTurn = !over && !dp.cpu && viewer === decider;
 
+  const lastOp = useRef<'act' | 'undo' | null>(null);
   const act = useCallback((a: Action) => {
+    lastOp.current = 'act';
     setHist((h) => {
       const cur = h[h.length - 1].s;
       try {
@@ -79,10 +82,80 @@ export function Game({ initial, onExit }: { initial: GameState; onExit: () => vo
     return () => clearTimeout(t);
   }, [s, session, cloudId]);
 
-  // CPU moves
+  // ---- effects: turn each state change into showcases, tile drops, toasts and banners ----
+  const [fxOn, setFxOn] = useState(loadFxSetting);
+  const [show, setShow] = useState<Showcase | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [banner, setBanner] = useState<Banner | null>(null);
+  const [fresh, setFresh] = useState<string[]>([]);
+  const [pulse, setPulse] = useState<{ kind: 'temp' | 'oxy' | 'ocean'; key: number } | null>(null);
+  const prevS = useRef(s);
+  const fxKey = useRef(0);
+  const holdRef = useRef(0);
+  const pushToast = useCallback((t: Omit<Toast, 'id'>) => {
+    const id = ++fxKey.current;
+    setToasts((x) => [...x.slice(-2), { ...t, id }]);
+    setTimeout(() => setToasts((x) => x.filter((y) => y.id !== id)), t.tone === 'trophy' ? 3600 : 2600);
+  }, []);
+  useEffect(() => {
+    const a = prevS.current;
+    prevS.current = s;
+    const op = lastOp.current;
+    lastOp.current = null;
+    holdRef.current = 0;
+    if (a === s || op !== 'act') return;
+    const ev = diffEvents(a, s);
+    const name = (pid: number) => (pid === viewer && !s.players[pid].cpu ? 'You' : s.players[pid].name);
+    const tiles = ev.flatMap((e) => (e.k === 'tile' ? [e.space] : []));
+    if (tiles.length) {
+      setFresh(tiles);
+      setTimeout(() => setFresh((f) => (f === tiles ? [] : f)), 1700);
+    }
+    const params = ev.filter((e) => e.k === 'param');
+    if (params.length) setPulse({ kind: (params[params.length - 1] as { which: 'temp' | 'oxy' | 'ocean' }).which, key: ++fxKey.current });
+    const cards = ev.filter((e) => e.k === 'card');
+    // corporations are founded while you choose your own: announce those quietly
+    if (cards.length && a.phase === 'setup') {
+      for (const e of cards as { pid: number; card: string }[]) if (e.pid !== viewer) pushToast({ pid: e.pid, tone: 'info', text: `${s.players[e.pid].name} founded ${CARDS[e.card].name}` });
+    } else if (cards.length && fxOn) {
+      const c = cards[cards.length - 1] as { pid: number; card: string };
+      const mine = c.pid === viewer && !s.players[c.pid].cpu;
+      setShow({ key: ++fxKey.current, pid: c.pid, card: c.card, mine });
+      if (!mine && cpuSpeed > 120) holdRef.current = 1300;
+    }
+    let bannered = false;
+    for (const e of ev) {
+      if (e.k === 'milestone') pushToast({ pid: e.pid, tone: 'trophy', text: `${name(e.pid)} claimed the ${e.name} milestone` });
+      if (e.k === 'award') pushToast({ pid: e.pid, tone: 'trophy', text: `${name(e.pid)} funded the ${e.name} award` });
+      if (e.k === 'pass' && e.pid !== viewer) pushToast({ pid: e.pid, tone: 'pass', text: `${s.players[e.pid].name} passed for this generation` });
+      if (e.k === 'action' && e.pid !== viewer && !ev.some((x) => x.k === 'pass' || x.k === 'tile' || x.k === 'param')) pushToast({ pid: e.pid, tone: 'info', text: e.text });
+      if (e.k === 'generation' && fxOn) {
+        const mine = viewer !== null ? e.production.find((x) => x.pid === viewer) : undefined;
+        setBanner({ key: ++fxKey.current, tone: 'gen', title: `Generation ${e.gen}`, sub: mine ? `Production: you collected ${mine.mc} M€` : 'Production paid out' });
+        bannered = true;
+        if (cpuSpeed > 120) holdRef.current = Math.max(holdRef.current, 1500);
+      }
+      if (e.k === 'terraformed' && fxOn) {
+        setBanner({ key: ++fxKey.current, tone: 'terraformed', title: 'Mars is terraformed', sub: 'Plant your last greeneries before scoring' });
+        bannered = true;
+      }
+    }
+    // your turn, when playing alone against CPUs
+    const d = deciderOf(s);
+    if (fxOn && !bannered && humans.length === 1 && d === viewer && deciderOf(a) !== d && s.phase === 'action' && !s.prompt) {
+      setBanner({ key: ++fxKey.current, tone: 'turn', title: 'Your turn' });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s]);
+  const toggleFx = () => setFxOn((v) => { saveFxSetting(!v); if (v) setShow(null); return !v; });
+  const endShow = useCallback(() => setShow(null), []);
+  const endBanner = useCallback(() => setBanner(null), []);
+
+  // CPU moves (held a little after a showcase or banner so you can see it)
   useEffect(() => {
     if (over || !dp.cpu) return;
-    const t = setTimeout(() => act(cpuAction(s, dp.cpu!)), s.prompt ? Math.min(250, cpuSpeed) : cpuSpeed);
+    const base = s.prompt ? Math.min(250, cpuSpeed) : cpuSpeed;
+    const t = setTimeout(() => act(cpuAction(s, dp.cpu!)), base + holdRef.current);
     return () => clearTimeout(t);
   }, [s, over, dp.cpu, act, cpuSpeed]);
 
@@ -95,14 +168,15 @@ export function Game({ initial, onExit }: { initial: GameState; onExit: () => vo
   const last = hist[hist.length - 1];
   const prev = hist[hist.length - 2];
   const canUndo = !!prev && last.actor !== null && last.actor === viewer && !s.players[last.actor].cpu && prev.s.reveal === s.reveal && !over;
-  const undo = () => setHist((h) => h.slice(0, -1));
+  const undo = () => { lastOp.current = 'undo'; setHist((h) => h.slice(0, -1)); };
 
   const pr = myTurn ? s.prompt : null;
   const spacePrompt = pr?.kind === 'space' ? pr : null;
   const me = viewer !== null ? s.players[viewer] : null;
 
   return (
-    <div className="game">
+    <FxContext.Provider value={fxOn}>
+    <div className="game" data-fx={fxOn ? 'on' : 'off'}>
       <header className="topbar">
         <div className="brand">Regolith</div>
         <div className="gen">Generation <b>{s.generation}</b></div>
@@ -113,6 +187,9 @@ export function Game({ initial, onExit }: { initial: GameState; onExit: () => vo
               {cloud === 'saving' ? 'Saving…' : cloud === 'saved' ? 'Saved to cloud' : 'Cloud save failed; saved on this device'}
             </span>
           )}
+          <label className="fx-toggle" title="Card showcases, tile animations and banners">
+            <input type="checkbox" checked={fxOn} onChange={toggleFx} /> Effects
+          </label>
           <label className="speed">CPU speed
             <select value={cpuSpeed} onChange={(e) => setCpuSpeed(Number(e.target.value))}>
               <option value={900}>Slow</option>
@@ -132,7 +209,7 @@ export function Game({ initial, onExit }: { initial: GameState; onExit: () => vo
           <Gauges s={s} />
           <div className="map-area">
             {spacePrompt && <div className="place-banner" role="status">{spacePrompt.title}: choose a highlighted space.</div>}
-            <Board s={s} options={spacePrompt?.options} onPick={(id) => act({ t: 'answer', space: id })} />
+            <Board s={s} options={spacePrompt?.options} onPick={(id) => act({ t: 'answer', space: id })} fresh={fresh} pulse={fxOn ? pulse : null} />
           </div>
         </div>
 
@@ -174,7 +251,12 @@ export function Game({ initial, onExit }: { initial: GameState; onExit: () => vo
       {viewCards !== null && <TableauDialog s={s} pid={viewCards} onClose={() => setViewCards(null)} />}
       {panel === 'sell' && me && <SellDialog s={s} pid={me.id} onClose={() => setPanel(null)} act={(a) => { setPanel(null); act(a); }} />}
       {over && <GameOver s={s} onExit={onExit} />}
+      {over && fxOn && <Confetti colors={s.players.map((p) => p.color)} />}
+      {show && <CardShowcase key={show.key} show={show} s={s} onDone={endShow} fast={cpuSpeed <= 120} />}
+      {banner && <BannerView key={banner.key} b={banner} onDone={endBanner} />}
+      <Toasts items={toasts} s={s} />
     </div>
+    </FxContext.Provider>
   );
 }
 
@@ -235,8 +317,8 @@ function Hand({ s, pid, onOpen, canAct }: { s: GameState; pid: number; onOpen: (
       </div>
       {cards.length === 0 && <p className="muted">No cards in hand. Buy some in the research phase or use standard projects.</p>}
       <div className="hand-cards">
-        {cards.map((id) => (
-          <Card key={id} id={id} s={s} pid={pid} dim={canAct && !canPlayCard(s, pid, id)} onClick={() => onOpen(id)} />
+        {cards.map((id, i) => (
+          <Card key={id} id={id} s={s} pid={pid} index={i} dim={canAct && !canPlayCard(s, pid, id)} onClick={() => onOpen(id)} />
         ))}
       </div>
     </section>
@@ -416,11 +498,11 @@ function SetupDialog({ s, pid, act }: { s: GameState; pid: number; act: (a: Acti
       </>}>
       <h3>Corporation</h3>
       <div className="pick-grid corps">
-        {su.corps.map((c) => <Card key={c} id={c} selected={corp === c} onClick={() => setCorp(c)} />)}
+        {su.corps.map((c, i) => <Card key={c} id={c} index={i} selected={corp === c} onClick={() => setCorp(c)} />)}
       </div>
       <h3>Starting cards {beginner ? '' : <span className="muted">3 M€ each</span>}</h3>
       <div className="pick-grid">
-        {su.cards.map((id) => <Card key={id} id={id} selected={beginner || keep.includes(id)} onClick={beginner ? undefined : () => toggle(id)} />)}
+        {su.cards.map((id, i) => <Card key={id} id={id} index={i + 2} selected={beginner || keep.includes(id)} onClick={beginner ? undefined : () => toggle(id)} />)}
       </div>
     </Dialog>
   );
@@ -439,7 +521,7 @@ function ResearchDialog({ s, pid, act }: { s: GameState; pid: number; act: (a: A
       </>}>
       <p>Buy any of these cards for 3 M€ each. The rest are discarded.</p>
       <div className="pick-grid">
-        {(p.research ?? []).map((id) => <Card key={id} id={id} s={s} pid={pid} selected={keep.includes(id)} onClick={() => toggle(id)} />)}
+        {(p.research ?? []).map((id, i) => <Card key={id} id={id} s={s} pid={pid} index={i} selected={keep.includes(id)} onClick={() => toggle(id)} />)}
       </div>
       <details className="hand-peek"><summary>Your hand ({p.hand.length})</summary>
         <div className="pick-grid">{p.hand.map((id) => <Card key={id} id={id} s={s} pid={pid} compact />)}</div>
@@ -499,7 +581,7 @@ function PromptDialog({ s, pr, act }: { s: GameState; pr: Prompt; act: (a: Actio
         </button>}>
           {pr.max === 0 && pr.costEach > 0 && <p className="warn">You can’t afford it, so it will be discarded.</p>}
           <div className="pick-grid">
-            {pr.cards.map((id) => <Card key={id} id={id} s={s} pid={pr.pid} selected={sel.includes(id)} onClick={pr.max > 0 ? () => toggle(id) : undefined} />)}
+            {pr.cards.map((id, i) => <Card key={id} id={id} s={s} pid={pr.pid} index={i} selected={sel.includes(id)} onClick={pr.max > 0 ? () => toggle(id) : undefined} />)}
           </div>
         </Dialog>
       );
@@ -537,7 +619,13 @@ function GameOver({ s, onExit }: { s: GameState; onExit: () => void }) {
   const rows = useMemo(() => s.players.map((p) => ({ p, sc: score(s, p.id) })).sort((a, b) => b.sc.total - a.sc.total || b.p.res.mc - a.p.res.mc), [s]);
   return (
     <Dialog title={`${rows[0].p.name} wins`} wide footer={<button type="button" className="btn" onClick={onExit}>Back to menu</button>}>
-      <p>Mars was terraformed in {s.generation} generations.</p>
+      <div className="gameover-head" style={{ ['--pc' as string]: rows[0].p.color }}>
+        <svg className="gameover-crown" viewBox="0 0 48 48" width="56" height="56" aria-hidden="true">
+          <polygon points="24,3 43,14 43,34 24,45 5,34 5,14" fill="var(--pc)" stroke="#1d2840" strokeWidth="2" />
+          <path d="M13 31 15 18l6 6 3-9 3 9 6-6 2 13Z" fill="#f6e8cf" stroke="#1d2840" strokeWidth="1.5" strokeLinejoin="round" />
+        </svg>
+        <p>Mars was terraformed in {s.generation} generations. {rows[0].p.name} finishes with {rows[0].sc.total} VP.</p>
+      </div>
       <table className="scores">
         <thead><tr><th>Player</th><th>TR</th><th>Milestones</th><th>Awards</th><th>Greeneries</th><th>Cities</th><th>Cards</th><th>Total</th></tr></thead>
         <tbody>
