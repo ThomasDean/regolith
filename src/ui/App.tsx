@@ -2,8 +2,10 @@ import { useMemo, useState } from 'react';
 import type { GameState, Level } from '../engine/types';
 import { createGame } from '../engine/game';
 import { Board } from './Board';
+import { Card } from './Card';
 import { clearSave, Game, loadGame, saveGame } from './Game';
 import { CloudPanel } from './Cloud';
+import { Gallery } from './Gallery';
 import { startNewCloudId } from '../cloud';
 import { PLAYER_COLORS, PLAYER_COLOR_NAMES } from './format';
 
@@ -15,15 +17,18 @@ const DEFAULT_SEATS: Seat[] = [
   { name: 'Ceres', kind: 'normal', color: PLAYER_COLORS[2] },
 ];
 const CPU_NAMES = ['Vesta', 'Ceres', 'Pallas', 'Hygiea', 'Juno'];
+const FAN = ['comet', 'kelp-farming', 'fusion-power', 'birds', 'terraforming-ganymede'];
 
 export function App() {
   const [game, setGame] = useState<GameState | null>(null);
   const saved = useMemo(() => (game ? null : loadGame()), [game]);
+  const [gallery, setGallery] = useState(() => typeof location !== 'undefined' && location.hash === '#gallery');
+  if (gallery) return <Gallery onExit={() => { history.replaceState(null, '', location.pathname); setGallery(false); }} />;
   if (game) return <Game key={game.options.seed} initial={game} onExit={() => setGame(null)} />;
-  return <Menu saved={saved && saved.phase !== 'over' ? saved : null} onStart={setGame} />;
+  return <Menu saved={saved && saved.phase !== 'over' ? saved : null} onStart={setGame} onGallery={() => { history.replaceState(null, '', '#gallery'); setGallery(true); }} />;
 }
 
-function Menu({ saved, onStart }: { saved: GameState | null; onStart: (s: GameState) => void }) {
+function Menu({ saved, onStart, onGallery }: { saved: GameState | null; onStart: (s: GameState) => void; onGallery: () => void }) {
   const [seats, setSeats] = useState<Seat[]>(DEFAULT_SEATS);
   const [corporateEra, setCorporateEra] = useState(true);
   const [seed, setSeed] = useState('');
@@ -45,7 +50,12 @@ function Menu({ saved, onStart }: { saved: GameState | null; onStart: (s: GameSt
   };
   return (
     <div className="menu">
-      <div className="menu-map" aria-hidden="true"><Board s={preview} /></div>
+      <div className="menu-map" aria-hidden="true">
+        <Board s={preview} />
+        <div className="menu-fan">
+          {FAN.map((id, i) => <div key={id} className="fan-card" style={{ ['--k' as string]: i - (FAN.length - 1) / 2 }}><Card id={id} compact still /></div>)}
+        </div>
+      </div>
       <div className="menu-panel">
         <h1>Regolith</h1>
         <p className="lede">Terraform Mars against friends on one device, or against CPU rivals that build engines of their own.</p>
@@ -95,6 +105,7 @@ function Menu({ saved, onStart }: { saved: GameState | null; onStart: (s: GameSt
 
         <button type="button" className="btn big" disabled={!valid} onClick={start}>Start game</button>
         {!valid && <p className="warn">Give every player a different name.</p>}
+        <p className="gallery-link"><button type="button" className="linkish" onClick={onGallery}>Browse all card art</button></p>
       </div>
     </div>
   );

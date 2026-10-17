@@ -59,12 +59,22 @@ src/engine/       Pure TypeScript rules engine (no DOM, no network)
   ai/value.ts     Engine-aware valuation (production, TR, VP, tags, discounts, triggers)
   ai/cpu.ts       CPU players: simulate each move, evaluate the result, pick the best
 src/ui/           React UI: SVG map, gauges, player boards, hand, dialogs, cloud-save panel
+  CardArt.tsx     Generated illustration for every card (scene from its subject, seeded variation)
+  Icons.tsx       Tag and resource glyphs
+  Fx.tsx          Effects: card-play showcase, animated numbers, toasts, banners, confetti
+  Gallery.tsx     Every card's artwork (menu link, or open the site with #gallery)
 src/cloud.ts      Supabase client: sign-in, save, list, load, delete (no-op when unconfigured)
 supabase/         Database migrations for cloud saves
 tests/            Vitest suites
 ```
 
 The engine is a reducer: `applyAction(state, action) -> state`. Card effects compile to a queue of small ops (gain, raise temperature, place tile, add a microbe…); any op that needs a decision opens a prompt that the next action answers. Randomness comes from a seeded generator stored in the state, so any game replays exactly from its seed and action list. The same engine can later run server-side for online play (a Supabase Edge Function, say) without changes.
+
+## Artwork and effects
+
+All artwork is original and drawn in code; none of the publisher's art is used. Each card gets an illustration generated from its id, tags and name: the subject picks a scene (an impact, a kelp bed, a reactor, a gas giant, a microscope view…) and a seeded random generator varies the palette, horizon, layout and props, so every card looks different but the same card always looks the same. Corporations get a crest with their monogram. The map sits on an illustrated planet that turns greener as the parameters rise, and tiles are drawn as small vignettes.
+
+During play: a played card swells to the middle of the screen and flies to its owner's panel, tiles drop onto the map (oceans flood in, greeneries sprout, cities rise), numbers count up with a floating +/−, the planet flashes when a global parameter moves, and banners mark each generation and your turn. Milestones and awards get a trophy toast and the winner gets confetti. CPUs pause briefly after a showcase so you can read the card. Turn effects off with the **Effects** switch in the top bar; they also start off when your system asks for reduced motion.
 
 Hotseat games autosave to the browser's local storage and resume from the menu. Undo steps back through your own moves until a card is drawn or revealed.
 
