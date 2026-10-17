@@ -15,6 +15,7 @@ import { Dialog } from './Dialog';
 import { Gauges } from './Gauges';
 import { Players, ResourceGrid } from './Players';
 import { fmtTemp, RES_LABEL } from './format';
+import { cloudEnabled, currentCloudId, putSave, useSession } from '../cloud';
 
 const SAVE_KEY = 'regolith-save-v1';
 export function saveGame(s: GameState) {
@@ -65,6 +66,19 @@ export function Game({ initial, onExit }: { initial: GameState; onExit: () => vo
 
   useEffect(() => saveGame(s), [s]);
 
+  // cloud sync: a couple of seconds after the last change (right away when the game ends)
+  const session = useSession();
+  const cloudId = useMemo(() => (cloudEnabled ? currentCloudId() : ''), []);
+  const [cloud, setCloud] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  useEffect(() => {
+    if (!cloudEnabled || !session) return;
+    const t = setTimeout(() => {
+      setCloud('saving');
+      putSave(cloudId, s).then(() => setCloud('saved'), () => setCloud('error'));
+    }, s.phase === 'over' ? 0 : 2500);
+    return () => clearTimeout(t);
+  }, [s, session, cloudId]);
+
   // CPU moves
   useEffect(() => {
     if (over || !dp.cpu) return;
@@ -94,6 +108,11 @@ export function Game({ initial, onExit }: { initial: GameState; onExit: () => vo
         <div className="gen">Generation <b>{s.generation}</b></div>
         <Status s={s} viewer={viewer} />
         <div className="topbar-tools">
+          {session && cloud !== 'idle' && (
+            <span className={`cloud-status ${cloud}`} role="status">
+              {cloud === 'saving' ? 'Saving…' : cloud === 'saved' ? 'Saved to cloud' : 'Cloud save failed; saved on this device'}
+            </span>
+          )}
           <label className="speed">CPU speed
             <select value={cpuSpeed} onChange={(e) => setCpuSpeed(Number(e.target.value))}>
               <option value={900}>Slow</option>

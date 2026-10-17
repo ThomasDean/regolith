@@ -2,7 +2,9 @@ import { useMemo, useState } from 'react';
 import type { GameState, Level } from '../engine/types';
 import { createGame } from '../engine/game';
 import { Board } from './Board';
-import { clearSave, Game, loadGame } from './Game';
+import { clearSave, Game, loadGame, saveGame } from './Game';
+import { CloudPanel } from './Cloud';
+import { startNewCloudId } from '../cloud';
 import { PLAYER_COLORS, PLAYER_COLOR_NAMES } from './format';
 
 type Seat = { name: string; kind: 'human' | Level; color: string };
@@ -36,6 +38,7 @@ function Menu({ saved, onStart }: { saved: GameState | null; onStart: (s: GameSt
   const valid = names.every(Boolean) && new Set(names).size === names.length;
   const start = () => {
     clearSave();
+    startNewCloudId();
     onStart(createGame(seats.map((s) => ({ name: s.name.trim(), color: s.color, cpu: s.kind === 'human' ? null : s.kind })), {
       corporateEra, seed: seed.trim() ? Number(seed) || hash(seed) : undefined,
     }));
@@ -53,6 +56,8 @@ function Menu({ saved, onStart }: { saved: GameState | null; onStart: (s: GameSt
             <button type="button" className="btn" onClick={() => onStart(saved)}>Resume</button>
           </div>
         )}
+
+        <CloudPanel onResume={(g) => { saveGame(g); onStart(g); }} />
 
         <h2>Players</h2>
         <ol className="seats">

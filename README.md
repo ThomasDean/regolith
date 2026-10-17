@@ -18,11 +18,32 @@ npm run build:single # one self-contained dist-single/index.html
 
 ## Deploy
 
-**Netlify:** connect the repo (settings come from `netlify.toml`), or run `npx netlify deploy --prod --dir dist` after a build. Turn on password protection in site settings.
+**Vercel (recommended):** import this repo at vercel.com/new. The framework preset is Vite and the build settings come from `vercel.json`. Add two environment variables, both for Production and Preview:
 
-**Vercel:** import the repo (settings come from `vercel.json`), or run `npx vercel --prod`. Turn on Deployment Protection.
+| Name | Value |
+|---|---|
+| `VITE_SUPABASE_URL` | `https://hisostfnkralrabcvqxc.supabase.co` |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | `sb_publishable_pmpTChAB0rdE_4OeOK9LrA_MKLeOYpT` |
+
+Both are safe to ship in the browser; access is enforced in the database. Then turn on Deployment Protection if you want the site private. Every push to `main` redeploys.
+
+**Netlify:** connect the repo (settings come from `netlify.toml`), add the same two variables, and turn on password protection.
 
 Both configs send `X-Robots-Tag: noindex` so the site stays out of search engines.
+
+## Cloud saves (Supabase)
+
+Without the two variables above, Regolith is local-only: games autosave in the browser. With them, the menu shows **Cloud saves**: sign in with an emailed link, and every game you play while signed in syncs to Supabase a couple of seconds after each move, so you can pick it up on another device.
+
+- Data lives in the `regolith` schema of the Breakthrough Music dev project (free plan, no separate project). Migrations are in `supabase/migrations/`.
+- The `regolith.saves` table can't be read or written directly. The app goes through four functions (`list_saves`, `get_save`, `put_save`, `delete_save`), each limited to the signed-in user's own saves.
+- One-time Supabase settings (dashboard):
+  1. **Settings → Data API → Exposed schemas:** add `regolith`.
+  2. **Authentication → URL Configuration:** set Site URL to your Vercel URL and add it (plus `http://localhost:5173`) under Redirect URLs, so sign-in links come back to Regolith.
+  3. Optional: **Authentication → Emails → Magic Link** template, add `{{ .Token }}` if you'd like a 6-digit code in the email too; the app accepts either.
+- Supabase's built-in email sender only delivers to your organization's own team members and is rate-limited. To let friends sign in, set up custom SMTP under Authentication → Emails.
+
+For local development, `.env.development.local` holds the same two variables (`.env.example` shows the format).
 
 ## How it's built
 
@@ -37,7 +58,9 @@ src/engine/       Pure TypeScript rules engine (no DOM, no network)
   bot.ts          Random-move agent used to fuzz whole games in tests
   ai/value.ts     Engine-aware valuation (production, TR, VP, tags, discounts, triggers)
   ai/cpu.ts       CPU players: simulate each move, evaluate the result, pick the best
-src/ui/           React UI: SVG map, gauges, player boards, hand, dialogs
+src/ui/           React UI: SVG map, gauges, player boards, hand, dialogs, cloud-save panel
+src/cloud.ts      Supabase client: sign-in, save, list, load, delete (no-op when unconfigured)
+supabase/         Database migrations for cloud saves
 tests/            Vitest suites
 ```
 
@@ -93,5 +116,5 @@ In 80 seat-rotated 3-player games (Easy vs Normal vs Hard, ties count for each),
 
 - **M2** Draft variant, solo mode (neutral player, generation limit), Hellas and Elysium maps.
 - **M3** Animations, rules help, better phone layout for the hand.
-- **M4** Online rooms on Supabase with server-side move validation and private hands; CPUs can fill empty seats.
+- **M4** Online rooms on Supabase (building on the cloud-save tables) with server-side move validation and private hands; CPUs can fill empty seats.
 - **M5** Prelude and other expansions; stronger Hard CPU via deeper search.
