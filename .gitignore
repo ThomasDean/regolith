@@ -24,3 +24,7 @@ dist-ssr
 *.sw?
 
 dist-single
+
+# built from server/edge.ts by npm run build:edge
+supabase/functions/regolith-play/index.js
+supabase/.temp/

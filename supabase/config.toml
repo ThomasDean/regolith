@@ -1,0 +1,8 @@
+# Only what the Supabase CLI needs to deploy Regolith's Edge Function.
+# The project ref is passed on the command line (see `npm run deploy:edge`).
+project_id = "regolith"
+
+[functions.regolith-play]
+# The bundle checks the caller's sign-in itself.
+verify_jwt = false
+entrypoint = "./functions/regolith-play/index.js"

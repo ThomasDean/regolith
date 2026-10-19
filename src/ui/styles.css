@@ -492,3 +492,30 @@ button.card:hover { --lift: -4px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 12
 .gameover-head { display: flex; align-items: center; gap: 12px; }
 .gameover-crown { flex: none; }
 @media (max-width: 640px) { .toasts { right: auto; left: 50%; transform: translateX(-50%); justify-items: center; } .showcase-glow { width: 360px; height: 360px; } }
+
+/* ---------- online play ---------- */
+.online { margin-top: 4px; display: grid; gap: 8px; }
+.online > p { margin: 0; font-size: 0.9rem; }
+.online-join #online-name { flex: 1 1 140px; }
+.code-input, .online-join .code-input { flex: 0 1 108px; font-family: var(--display); letter-spacing: 0.18em; text-transform: uppercase; }
+.small-print { font-size: 0.82rem; }
+.badge { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 999px; background: var(--o2); color: var(--bg); font-size: 0.72rem; font-family: var(--display); vertical-align: 1px; }
+.start-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.online-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
+.online-screen .menu-panel { width: min(520px, 100%); }
+.lobby .eyebrow { margin: 0; color: var(--muted); font-family: var(--display); text-transform: uppercase; letter-spacing: 0.12em; font-size: 0.78rem; }
+.lobby .lobby-code { font-size: clamp(2.4rem, 11vw, 3.6rem); letter-spacing: 0.16em; color: var(--dust); margin: 2px 0 12px; overflow-wrap: anywhere; }
+.lobby-share { display: flex; gap: 6px; flex-wrap: wrap; }
+.lobby-share input { flex: 1 1 200px; min-width: 0; color: var(--muted); }
+.online-seats { list-style: none; padding: 0; margin: 0 0 10px; display: grid; gap: 8px; }
+.online-seats li { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; border-left: 4px solid var(--pc); padding: 6px 0 6px 10px; background: var(--panel-2); border-radius: 0 var(--radius-s) var(--radius-s) 0; }
+.online-seats li[data-open] { border-left-style: dashed; }
+.online-seats .seat-name { flex: 1 1 140px; min-width: 0; overflow-wrap: anywhere; }
+.online-seats select { margin-right: 4px; }
+.seat-kind { margin-right: 10px; font-size: 0.88rem; }
+.lobby-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 18px; }
+.lobby-actions p { margin: 0; flex: 1 1 100%; }
+.room-code { font-size: 0.85rem; color: var(--muted); white-space: nowrap; }
+.room-code b { color: var(--text); font-family: var(--display); letter-spacing: 0.12em; }
+.waiting-note { border-left: 3px solid var(--o2); }
+.sim-bar { position: fixed; z-index: 90; left: 50%; bottom: 10px; transform: translateX(-50%); display: flex; gap: 6px; align-items: center; background: var(--panel); padding: 6px 10px; border-radius: var(--radius-m); box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4); font-size: 0.85rem; }

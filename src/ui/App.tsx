@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import type { GameState, Level } from '../engine/types';
 import { createGame } from '../engine/game';
 import { Board } from './Board';
@@ -6,7 +6,9 @@ import { Card } from './Card';
 import { clearSave, Game, loadGame, saveGame } from './Game';
 import { CloudPanel } from './Cloud';
 import { Gallery } from './Gallery';
-import { startNewCloudId } from '../cloud';
+import { startNewCloudId, useSession } from '../cloud';
+import { hostRoom, OnlinePanel, OnlineRoom } from './Online';
+import { onlineEnabled } from '../online/client';
 import { PLAYER_COLORS, PLAYER_COLOR_NAMES } from './format';
 
 type Seat = { name: string; kind: 'human' | Level; color: string };
@@ -16,6 +18,7 @@ const DEFAULT_SEATS: Seat[] = [
   { name: 'Vesta', kind: 'normal', color: PLAYER_COLORS[1] },
   { name: 'Ceres', kind: 'normal', color: PLAYER_COLORS[2] },
 ];
+const OnlineSim = lazy(() => import('./OnlineSim').then((m) => ({ default: m.OnlineSim })));
 const CPU_NAMES = ['Vesta', 'Ceres', 'Pallas', 'Hygiea', 'Juno'];
 const FAN = ['comet', 'kelp-farming', 'fusion-power', 'birds', 'terraforming-ganymede'];
 
@@ -23,12 +26,18 @@ export function App() {
   const [game, setGame] = useState<GameState | null>(null);
   const saved = useMemo(() => (game ? null : loadGame()), [game]);
   const [gallery, setGallery] = useState(() => typeof location !== 'undefined' && location.hash === '#gallery');
+  const [room, setRoom] = useState<string | null>(null);
+  if (import.meta.env.DEV && typeof location !== 'undefined' && location.hash === '#online-sim') return <Suspense fallback={null}><OnlineSim /></Suspense>;
+  if (room) return <OnlineRoom key={room} id={room} onExit={() => setRoom(null)} />;
   if (gallery) return <Gallery onExit={() => { history.replaceState(null, '', location.pathname); setGallery(false); }} />;
   if (game) return <Game key={game.options.seed} initial={game} onExit={() => setGame(null)} />;
-  return <Menu saved={saved && saved.phase !== 'over' ? saved : null} onStart={setGame} onGallery={() => { history.replaceState(null, '', '#gallery'); setGallery(true); }} />;
+  return <Menu saved={saved && saved.phase !== 'over' ? saved : null} onStart={setGame} onOnline={setRoom} onGallery={() => { history.replaceState(null, '', '#gallery'); setGallery(true); }} />;
 }
 
-function Menu({ saved, onStart, onGallery }: { saved: GameState | null; onStart: (s: GameState) => void; onGallery: () => void }) {
+function Menu({ saved, onStart, onOnline, onGallery }: { saved: GameState | null; onStart: (s: GameState) => void; onOnline: (room: string) => void; onGallery: () => void }) {
+  const session = useSession();
+  const [hosting, setHosting] = useState(false);
+  const [hostErr, setHostErr] = useState<string | null>(null);
   const [seats, setSeats] = useState<Seat[]>(DEFAULT_SEATS);
   const [corporateEra, setCorporateEra] = useState(true);
   const [seed, setSeed] = useState('');
@@ -68,6 +77,7 @@ function Menu({ saved, onStart, onGallery }: { saved: GameState | null; onStart:
         )}
 
         <CloudPanel onResume={(g) => { saveGame(g); onStart(g); }} />
+        <OnlinePanel onOpen={onOnline} />
 
         <h2>Players</h2>
         <ol className="seats">
@@ -103,8 +113,25 @@ function Menu({ saved, onStart, onGallery }: { saved: GameState | null; onStart:
           <label>Use a seed to replay the same deal <input value={seed} onChange={(e) => setSeed(e.target.value)} placeholder="Random" /></label>
         </details>
 
-        <button type="button" className="btn big" disabled={!valid} onClick={start}>Start game</button>
+        <div className="start-row">
+          <button type="button" className="btn big" disabled={!valid} onClick={start}>Start game</button>
+          {onlineEnabled && (
+            <button type="button" className="btn big ghost" disabled={!valid || hosting || seats[0].kind !== 'human'}
+              title="Other Human seats become open seats for friends to join"
+              onClick={async () => {
+                setHosting(true); setHostErr(null);
+                try { onOnline(await hostRoom(seats.map((x) => ({ ...x, name: x.name.trim() })), corporateEra, !!session)); }
+                catch (e) { setHostErr((e as Error).message); }
+                finally { setHosting(false); }
+              }}>
+              {hosting ? 'Opening…' : 'Host online'}
+            </button>
+          )}
+        </div>
         {!valid && <p className="warn">Give every player a different name.</p>}
+        {onlineEnabled && valid && seats[0].kind !== 'human' && <p className="muted">To host online, make the first seat yours (Human).</p>}
+        {onlineEnabled && <p className="muted small-print">Online: the first seat is you; other Human seats are left open for friends, who join with the game’s code.</p>}
+        {hostErr && <p className="warn" role="alert">{hostErr}</p>}
         <p className="gallery-link"><button type="button" className="linkish" onClick={onGallery}>Browse all card art</button></p>
       </div>
     </div>

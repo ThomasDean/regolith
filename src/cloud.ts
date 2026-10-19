@@ -10,7 +10,7 @@ const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined;
 export const cloudEnabled = !!(url && key);
 
 let client: SupabaseClient | null = null;
-function sb(): SupabaseClient {
+export function sb(): SupabaseClient {
   if (!cloudEnabled) throw new Error('Cloud saves are not configured');
   client ??= createClient(url!, key!, { auth: { flowType: 'pkce', persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
   return client;

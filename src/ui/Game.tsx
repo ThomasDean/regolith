@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Action, GameState, Payment, Prompt, StdProject } from '../engine/types';
+import type { Action, GameState, Level, Payment, Prompt, StdProject } from '../engine/types';
 import { MAX_TEMP } from '../engine/types';
 import { applyAction } from '../engine/game';
 import { CARDS } from '../engine/cards';
@@ -17,6 +17,25 @@ import { Players, ResourceGrid } from './Players';
 import { fmtTemp, RES_LABEL } from './format';
 import { cloudEnabled, currentCloudId, putSave, useSession } from '../cloud';
 import { BannerView, CardShowcase, Confetti, diffEvents, FxContext, loadFxSetting, saveFxSetting, Toasts, type Banner, type Showcase, type Toast } from './Fx';
+import type { SeatRow } from '../online/protocol';
+
+/** What an online game gives the board: the server's view for your seat and a way to move. */
+export interface OnlineLink {
+  code: string;
+  /** your seat, or -1 when watching */
+  seat: number;
+  host: boolean;
+  version: number;
+  view: GameState;
+  seats: SeatRow[];
+  /** seats the game is waiting on; queued: picks already in for later in turn order */
+  waiting: number[];
+  queued: number[];
+  send: (a: Action) => Promise<void>;
+  /** ask the server for the next CPU step at this version */
+  advance: (version: number) => void;
+  setSeat: (seat: number, kind: 'human' | Level) => Promise<void>;
+}
 
 const SAVE_KEY = 'regolith-save-v1';
 export function saveGame(s: GameState) {
@@ -36,11 +55,12 @@ interface Entry { s: GameState; actor: number | null }
 
 const deciderOf = (s: GameState) => (s.prompt ? s.prompt.pid : s.active);
 
-export function Game({ initial, onExit }: { initial: GameState; onExit: () => void }) {
-  const [hist, setHist] = useState<Entry[]>([{ s: initial, actor: null }]);
+export function Game({ initial, onExit, online }: { initial: GameState; onExit: () => void; online?: OnlineLink }) {
+  const [hist, setHist] = useState<Entry[]>([{ s: online?.view ?? initial, actor: null }]);
   const s = hist[hist.length - 1].s;
   const humans = s.players.filter((p) => !p.cpu).map((p) => p.id);
-  const [viewer, setViewer] = useState<number | null>(humans.length === 1 ? humans[0] : null);
+  const [localViewer, setViewer] = useState<number | null>(humans.length === 1 ? humans[0] : null);
+  const viewer = online ? (online.seat >= 0 ? online.seat : null) : localViewer;
   const [error, setError] = useState<string | null>(null);
   const [cpuSpeed, setCpuSpeed] = useState(450);
   const [viewCards, setViewCards] = useState<number | null>(null);
@@ -52,7 +72,8 @@ export function Game({ initial, onExit }: { initial: GameState; onExit: () => vo
   const myTurn = !over && !dp.cpu && viewer === decider;
 
   const lastOp = useRef<'act' | 'undo' | null>(null);
-  const act = useCallback((a: Action) => {
+  const [sending, setSending] = useState(false);
+  const localAct = useCallback((a: Action) => {
     lastOp.current = 'act';
     setHist((h) => {
       const cur = h[h.length - 1].s;
@@ -66,21 +87,41 @@ export function Game({ initial, onExit }: { initial: GameState; onExit: () => vo
       }
     });
   }, []);
+  const sendRef = useRef(online?.send);
+  sendRef.current = online?.send;
+  const onlineAct = useCallback((a: Action) => {
+    setSending(true);
+    setError(null);
+    sendRef.current!(a).catch((e) => setError((e as Error).message)).finally(() => setSending(false));
+  }, []);
+  const act = online ? onlineAct : localAct;
 
-  useEffect(() => saveGame(s), [s]);
+  // online: each newer server view becomes the next step, so effects play as they do locally
+  const onlineView = online?.view;
+  useEffect(() => {
+    if (!onlineView) return;
+    setHist((h) => {
+      const cur = h[h.length - 1].s;
+      if (cur === onlineView) return h;
+      lastOp.current = 'act';
+      return [...h.slice(-80), { s: onlineView, actor: deciderOf(cur) }];
+    });
+  }, [onlineView]);
+
+  useEffect(() => { if (!online) saveGame(s); }, [s, online]);
 
   // cloud sync: a couple of seconds after the last change (right away when the game ends)
   const session = useSession();
   const cloudId = useMemo(() => (cloudEnabled ? currentCloudId() : ''), []);
   const [cloud, setCloud] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   useEffect(() => {
-    if (!cloudEnabled || !session) return;
+    if (!cloudEnabled || !session || online) return;
     const t = setTimeout(() => {
       setCloud('saving');
       putSave(cloudId, s).then(() => setCloud('saved'), () => setCloud('error'));
     }, s.phase === 'over' ? 0 : 2500);
     return () => clearTimeout(t);
-  }, [s, session, cloudId]);
+  }, [s, session, cloudId, online]);
 
   // ---- effects: turn each state change into showcases, tile drops, toasts and banners ----
   const [fxOn, setFxOn] = useState(loadFxSetting);
@@ -142,7 +183,7 @@ export function Game({ initial, onExit }: { initial: GameState; onExit: () => vo
     }
     // your turn, when playing alone against CPUs
     const d = deciderOf(s);
-    if (fxOn && !bannered && humans.length === 1 && d === viewer && deciderOf(a) !== d && s.phase === 'action' && !s.prompt) {
+    if (fxOn && !bannered && (online || humans.length === 1) && d === viewer && deciderOf(a) !== d && s.phase === 'action' && !s.prompt) {
       setBanner({ key: ++fxKey.current, tone: 'turn', title: 'Your turn' });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -152,25 +193,43 @@ export function Game({ initial, onExit }: { initial: GameState; onExit: () => vo
   const endBanner = useCallback(() => setBanner(null), []);
 
   // CPU moves (held a little after a showcase or banner so you can see it)
+  // Online, the server plays CPU seats one step at a time when asked: the host's screen asks,
+  // paced like local play; everyone else asks only if the host seems to be away.
+  const advanceRef = useRef(online?.advance);
+  advanceRef.current = online?.advance;
+  const onlineVersion = online?.version;
+  const onlineHost = online?.host;
   useEffect(() => {
     if (over || !dp.cpu) return;
     const base = s.prompt ? Math.min(250, cpuSpeed) : cpuSpeed;
+    if (onlineVersion !== undefined) {
+      const v = onlineVersion;
+      const t = setTimeout(() => advanceRef.current!(v), base + holdRef.current + (onlineHost ? 0 : 6000));
+      return () => clearTimeout(t);
+    }
     const t = setTimeout(() => act(cpuAction(s, dp.cpu!)), base + holdRef.current);
     return () => clearTimeout(t);
-  }, [s, over, dp.cpu, act, cpuSpeed]);
+  }, [s, over, dp.cpu, act, cpuSpeed, onlineVersion, onlineHost]);
 
   // with several humans, hide hands between them
-  const needsHandoff = !over && !dp.cpu && viewer !== decider;
+  const needsHandoff = !online && !over && !dp.cpu && viewer !== decider;
   useEffect(() => {
     if (needsHandoff && humans.length === 1) setViewer(decider);
   }, [needsHandoff, humans.length, decider]);
 
   const last = hist[hist.length - 1];
   const prev = hist[hist.length - 2];
-  const canUndo = !!prev && last.actor !== null && last.actor === viewer && !s.players[last.actor].cpu && prev.s.reveal === s.reveal && !over;
+  const canUndo = !online && !!prev && last.actor !== null && last.actor === viewer && !s.players[last.actor].cpu && prev.s.reveal === s.reveal && !over;
   const undo = () => { lastOp.current = 'undo'; setHist((h) => h.slice(0, -1)); };
 
-  const pr = myTurn ? s.prompt : null;
+  // online, corporation and research picks are made at the same time, not in turn order
+  const meP = viewer !== null ? s.players[viewer] : null;
+  const picking = online
+    ? !!meP && !s.prompt && !online.queued.includes(meP.id) && ((s.phase === 'setup' && !!meP.setup) || (s.phase === 'research' && !!meP.research))
+    : myTurn;
+  const canAct = myTurn && !sending;
+  const pr = canAct ? s.prompt : null;
+  const [seatsOpen, setSeatsOpen] = useState(false);
   const spacePrompt = pr?.kind === 'space' ? pr : null;
   const me = viewer !== null ? s.players[viewer] : null;
 
@@ -180,7 +239,7 @@ export function Game({ initial, onExit }: { initial: GameState; onExit: () => vo
       <header className="topbar">
         <div className="brand">Regolith</div>
         <div className="gen">Generation <b>{s.generation}</b></div>
-        <Status s={s} viewer={viewer} />
+        <Status s={s} viewer={viewer} online={online} />
         <div className="topbar-tools">
           {session && cloud !== 'idle' && (
             <span className={`cloud-status ${cloud}`} role="status">
@@ -197,7 +256,14 @@ export function Game({ initial, onExit }: { initial: GameState; onExit: () => vo
               <option value={120}>Fast</option>
             </select>
           </label>
-          <button type="button" className="btn ghost" onClick={undo} disabled={!canUndo} title="Undo your last step (not after cards are drawn)">Undo</button>
+          {online ? (
+            <>
+              <span className="room-code" title="Friends join with this code">Game <b>{online.code}</b></span>
+              {online.host && !over && <button type="button" className="btn ghost" onClick={() => setSeatsOpen(true)}>Seats</button>}
+            </>
+          ) : (
+            <button type="button" className="btn ghost" onClick={undo} disabled={!canUndo} title="Undo your last step (not after cards are drawn)">Undo</button>
+          )}
           <button type="button" className="btn ghost" onClick={onExit}>Menu</button>
         </div>
       </header>
@@ -220,9 +286,9 @@ export function Game({ initial, onExit }: { initial: GameState; onExit: () => vo
 
         <section className="desk">
           {me && !over && s.phase === 'action' && (
-            <ActionBar s={s} pid={me.id} myTurn={myTurn && !s.prompt && !s.pendingAction} act={act} panel={panel} setPanel={setPanel} />
+            <ActionBar s={s} pid={me.id} myTurn={canAct && !s.prompt && !s.pendingAction} act={act} panel={panel} setPanel={setPanel} />
           )}
-          {me && s.phase === 'finalGreenery' && myTurn && !s.prompt && (
+          {me && s.phase === 'finalGreenery' && canAct && !s.prompt && (
             <div className="final-bar">
               <p>Mars is terraformed. Turn your remaining plants into greeneries before scoring.</p>
               <button type="button" className="btn" disabled={me.res.plants < greeneryCost(s, me.id) || !availableSpaces(s, me.id, 'greenery', 'greenery').length} onClick={() => act({ t: 'plants' })}>
@@ -232,9 +298,12 @@ export function Game({ initial, onExit }: { initial: GameState; onExit: () => vo
             </div>
           )}
           {me && (
-            <Hand s={s} pid={me.id} onOpen={setOpenCard} canAct={myTurn && s.phase === 'action' && !s.prompt && !s.pendingAction} />
+            <Hand s={s} pid={me.id} onOpen={setOpenCard} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} />
           )}
-          {!me && !over && <p className="muted pad">Hands stay hidden until a player takes the device.</p>}
+          {!me && !over && <p className="muted pad">{online ? 'You are watching this game.' : 'Hands stay hidden until a player takes the device.'}</p>}
+          {online && me && !over && !picking && !myTurn && (s.phase === 'setup' || s.phase === 'research') && (
+            <p className="muted pad waiting-note" role="status">Your {s.phase === 'setup' ? 'corporation' : 'research'} is in. It applies when your turn comes round.</p>
+          )}
         </section>
       </main>
 
@@ -244,10 +313,11 @@ export function Game({ initial, onExit }: { initial: GameState; onExit: () => vo
           <button type="button" className="btn big" onClick={() => setViewer(decider)}>I'm {dp.name}, show my hand</button>
         </Dialog>
       )}
-      {myTurn && s.phase === 'setup' && <SetupDialog s={s} pid={decider} act={act} />}
-      {myTurn && s.phase === 'research' && !s.prompt && <ResearchDialog s={s} pid={decider} act={act} />}
+      {picking && !sending && s.phase === 'setup' && <SetupDialog s={s} pid={online ? viewer! : decider} act={act} />}
+      {picking && !sending && s.phase === 'research' && !s.prompt && <ResearchDialog s={s} pid={online ? viewer! : decider} act={act} />}
+      {seatsOpen && online && <SeatsDialog s={s} online={online} onClose={() => setSeatsOpen(false)} />}
       {pr && pr.kind !== 'space' && <PromptDialog s={s} pr={pr} act={act} />}
-      {openCard && me && <CardDialog s={s} pid={me.id} id={openCard} canAct={myTurn && s.phase === 'action' && !s.prompt && !s.pendingAction} onClose={() => setOpenCard(null)} act={(a) => { setOpenCard(null); act(a); }} />}
+      {openCard && me && <CardDialog s={s} pid={me.id} id={openCard} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} onClose={() => setOpenCard(null)} act={(a) => { setOpenCard(null); act(a); }} />}
       {viewCards !== null && <TableauDialog s={s} pid={viewCards} onClose={() => setViewCards(null)} />}
       {panel === 'sell' && me && <SellDialog s={s} pid={me.id} onClose={() => setPanel(null)} act={(a) => { setPanel(null); act(a); }} />}
       {over && <GameOver s={s} onExit={onExit} />}
@@ -261,9 +331,16 @@ export function Game({ initial, onExit }: { initial: GameState; onExit: () => vo
 }
 
 // ---------------- status line ----------------
-function Status({ s, viewer }: { s: GameState; viewer: number | null }) {
+function Status({ s, viewer, online }: { s: GameState; viewer: number | null; online?: OnlineLink }) {
   const d = s.players[deciderOf(s)];
   let text: string;
+  const names = (ids: number[]) => ids.map((i) => (i === viewer ? 'you' : s.players[i].name)).join(', ');
+  if (online && (s.phase === 'setup' || s.phase === 'research') && !s.prompt && online.waiting.length) {
+    const ids = online.waiting;
+    const what = s.phase === 'setup' ? 'founding corporations' : 'buying research';
+    text = ids.length === 1 && ids[0] === viewer ? `Your move: ${what}` : `Waiting on ${names(ids)}: ${what}`;
+    return <div className="status" role="status" aria-live="polite" style={{ ['--pc' as string]: s.players[ids[0]].color }}><span className="swatch" />{text}</div>;
+  }
   if (s.phase === 'over') text = 'Game over';
   else if (s.phase === 'setup') text = `${d.name} is choosing a corporation`;
   else if (s.phase === 'research') text = `${d.name} is buying research cards`;
@@ -271,6 +348,7 @@ function Status({ s, viewer }: { s: GameState; viewer: number | null }) {
   else text = `${d.name}'s turn`;
   if (d.cpu && s.phase !== 'over') text += '…';
   else if (viewer === d.id && s.phase === 'action') text = 'Your turn';
+  else if (online && s.phase !== 'over' && !d.cpu) text = `Waiting on ${d.name}`;
   return <div className="status" role="status" aria-live="polite" style={{ ['--pc' as string]: d.color }}><span className="swatch" />{text}</div>;
 }
 
@@ -596,6 +674,37 @@ function PromptDialog({ s, pr, act }: { s: GameState; pr: Prompt; act: (a: Actio
     default:
       return null;
   }
+}
+
+// ---------------- online seats (host) ----------------
+function SeatsDialog({ s, online, onClose }: { s: GameState; online: OnlineLink; onClose: () => void }) {
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const change = async (i: number, kind: 'human' | Level) => {
+    setBusy(true); setErr(null);
+    try { await online.setSeat(i, kind); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
+  };
+  return (
+    <Dialog title="Seats" onClose={onClose}>
+      <p className="muted">If a friend has to drop out, a CPU can play their seat. Hand it back whenever they return.</p>
+      <ul className="online-seats">
+        {online.seats.map((seat, i) => (
+          <li key={i} style={{ ['--pc' as string]: s.players[i].color }}>
+            <span className="swatch" /><span className="seat-name">{seat.name}</span>
+            {i === online.seat ? <span className="muted">You</span> : (
+              <select value={s.players[i].cpu ?? 'human'} disabled={busy} onChange={(e) => change(i, e.target.value as 'human' | Level)} aria-label={`Who plays ${seat.name}`}>
+                {seat.user && <option value="human">{seat.name} plays</option>}
+                <option value="easy">Easy CPU</option>
+                <option value="normal">Normal CPU</option>
+                <option value="hard">Hard CPU</option>
+              </select>
+            )}
+          </li>
+        ))}
+      </ul>
+      {err && <p className="warn">{err}</p>}
+    </Dialog>
+  );
 }
 
 // ---------------- tableau ----------------
