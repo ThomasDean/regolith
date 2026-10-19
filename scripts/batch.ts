@@ -17,6 +17,7 @@ for (let g = start; g < start + count; g++) {
     continue;
   }
   gens.push(s.generation);
+  if (s.generation > 16) console.log('LONG seed', g, 'gens', s.generation, 'seats', seat.join(','));
   const sc = s.players.map((p) => score(s, p.id).total);
   const best = Math.max(...sc);
   const mean = sc.reduce((a, b) => a + b, 0) / sc.length;

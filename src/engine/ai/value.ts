@@ -216,6 +216,22 @@ export function resValue(c: Ctx, r: Res): number {
   }
 }
 
+/**
+ * A heat stockpile is only worth temperature steps while steps remain: with one step left, 40
+ * heat is one conversion, not five. Valuing every unit at the per-step rate made the last step
+ * look like it destroyed the stockpile, so nobody would take it and games stalled for dozens of
+ * generations a step short of the end.
+ */
+export function heatStockValue(c: Ctx, n: number): number {
+  if (n <= 0) return 0;
+  const unit = resValue(c, 'heat');
+  const p = P(c.s, c.pid);
+  const other = Math.max(p.corp === 'helion' ? resValue(c, 'mc') : 0, p.played.includes('caretaker-contract') ? trValue(c) / 8 * 0.8 : 0);
+  if (other >= unit) return n * unit;
+  const convertible = tempLeft(c.s) * 8;
+  return Math.min(n, convertible) * unit + Math.max(0, n - convertible) * other;
+}
+
 const ENERGY_SINKS: Record<string, number> = {
   ironworks: 4, steelworks: 4, 'ore-processor': 4, 'physics-complex': 6, 'water-splitting-plant': 3,
   'development-center': 1, 'martian-rails': 1, 'power-infrastructure': 2,
@@ -663,7 +679,8 @@ export function positionBreakdown(s: GameState, pid: number, w: Weights, opts: S
   const c = makeCtx(s, pid, w, opts.clock);
   const p = P(s, pid);
   const out = { score: scoreEV(c) * c.vp, stock: 0, income: 0, engine: 0, hand: 0 };
-  for (const r of ['mc', 'steel', 'titanium', 'plants', 'energy', 'heat'] as Res[]) out.stock += p.res[r] * resValue(c, r);
+  for (const r of ['mc', 'steel', 'titanium', 'plants', 'energy'] as Res[]) out.stock += p.res[r] * resValue(c, r);
+  out.stock += heatStockValue(c, p.res.heat);
   if (!c.last) {
     out.income += (p.tr + p.prod.mc) * prodValue(c, 'mc');
     for (const r of ['steel', 'titanium', 'plants', 'energy', 'heat'] as Res[]) out.income += p.prod[r] * prodValue(c, r);

@@ -1,7 +1,7 @@
 // Break down a CPU decision: play seeded game <seed> until generation <gen>'s action phase (or
 // until the first action matching <kind>, e.g. "sp:aquifer" or "award"), then show how each top
 // candidate changes the evaluation terms (score, stock, income, engine, hand).
-// Usage: tsx scripts/inspect.ts <agent> <seed> <gen|kind>
+// Usage: tsx scripts/inspect.ts <agent[,agent,agent]> <seed> <gen|kind>   (the agent list rotates seats like batch.ts)
 import { playSeeded, levelOf, lcg } from './sim';
 import * as cur from '../src/engine/ai/cpu';
 import * as curV from '../src/engine/ai/value';
@@ -10,22 +10,24 @@ import * as oldV from './baseline/value';
 import { applyAction } from '../src/engine/game';
 import type { Action, GameState } from '../src/engine/types';
 
-const agent = process.argv[2] ?? 'normal';
+const agents = (process.argv[2] ?? 'normal').split(',');
+if (agents.length === 1) agents.push(agents[0], agents[0]);
+let agent = agents[0];
 const seed = Number(process.argv[3] ?? 1);
 const target = process.argv[4] ?? '1';
-const isOld = agent.startsWith('old-');
-const C = isOld ? old : cur, V = isOld ? oldV : curV;
 const key = (a: Action) => (a.t === 'sp' ? `sp:${a.id}` : a.t);
 let found: GameState | null = null;
 try {
-  playSeeded([agent, agent, agent], seed, (s, _pid, a) => {
+  playSeeded(agents, seed, (s, pid, a, seat) => {
     if (s.phase !== 'action' || s.prompt) return;
     const hit = /^\d+$/.test(target) ? s.generation === +target : key(a) === target;
-    if (hit) { found = structuredClone(s); throw new Error('stop'); }
+    if (hit) { found = structuredClone(s); agent = seat[pid]; throw new Error('stop'); }
   });
 } catch { /* stopped */ }
 if (!found) { console.log('not reached'); process.exit(0); }
 const s = found as GameState;
+const isOld = agent.startsWith('old-');
+const C = isOld ? old : cur, V = isOld ? oldV : curV;
 const pid = s.active;
 const cfg = C.LEVELS[levelOf(agent)];
 const clock = V.clockOf(s);
