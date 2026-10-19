@@ -280,7 +280,7 @@ export function Game({ initial, onExit, online }: { initial: GameState; onExit: 
         </div>
 
         <aside className="side">
-          <Players s={s} viewer={viewer} onView={setViewCards} />
+          <Players s={s} viewer={viewer} onView={setViewCards} queued={online?.queued} />
           <Log s={s} />
         </aside>
 
