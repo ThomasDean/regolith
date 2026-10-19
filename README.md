@@ -90,19 +90,34 @@ Each turn a CPU copies the game, reshuffles the deck in its copy (so it can't pe
 - **Pairs across the hand:** when planning (research, starting cards, what a hand is worth), a feeder counts targets it's still holding (Large Convoy with Birds in hand), an accumulator counts the feeders that will fill it (Tardigrades with Symbiotic Fungus in play), and consumers in hand raise the value of what they consume: Steelworks or Ironworks make energy production worth more, Space Elevator makes steel worth more, Caretaker Contract makes heat worth more. Each pair is split between its two cards so it isn't counted twice.
 - **Sequencing** falls out of the simulation: playing Earth Office before the Earth cards, or the animal card before the event that feeds it, scores higher than the reverse.
 - **Research** buys a card only if it adds more to the hand than its 3 M€, given how much money the CPU can expect to spend on cards.
+- **Awards** are forecast, not banked. For each award the CPU projects every player's final metric (tiles and M€ production compound; heat and steel/titanium churn as they're spent) with a spread that grows with the generations left, both fitted on seeded CPU games (`scripts/award-data.ts`). A funded award counts as the expected 5/2 points it will pay, minus what it hands the rivals in the same race. An open award slot keeps an *option* value: the CPU could still fund it later once the race has settled, at the higher 14/20 M€ price and if the slot is still there. So funding pays only when the lead is wide enough, and the game far enough along, that locking it in beats waiting. Milestones are cheap and can't flip, so CPUs claim them as soon as they qualify.
+- **Heat** in stock is worth temperature steps only while steps remain, so the last conversion isn't avoided.
+- **Play styles:** each CPU seat gets a personality from the game seed (balanced, engine builder, terraformer or settler), a few percent of extra weight on production, terraforming, tiles or cards. Two CPUs in the same game lean different ways, but a game replays identically from its seed.
+- **Determinism:** CPU choices never use `Math.random`. When no random source is passed, `cpuAction` derives one from the game state, so the same state always gets the same move (replays and server-side referees agree).
 
 Difficulty changes the weights:
 
 | | Easy | Normal | Hard |
 |---|---|---|---|
 | Tag synergies | No | Yes | Yes |
-| Weighs opponents' gains | No | A little | Strongly (targets the leader, award denial) |
-| Judgement noise | High, some random moves | Low | None |
+| Weighs opponents' gains | No | A little | Strongly (targets the leader) |
+| Award timing | Forecast | Forecast | Forecast + denial (counts a rival's chance to fund a race they lead) |
+| Play style | Pronounced | Moderate | Slight |
+| Judgement noise | High, some random moves (never a random award) | Low | None |
 | Tempo (push to end when ahead) | No | No | Yes |
 | Looks ahead to its second action | No | No | Yes |
 | Samples per card-draw outcome | 1 | 1 | 3 |
 
-In 80 seat-rotated 3-player games (Easy vs Normal vs Hard, ties count for each), Hard won 46, Normal 27 and Easy 7, averaging 85, 81 and 72 VP. CPU games run about 12–14 generations. Re-run with `npx tsx scripts/batch.ts easy,normal,hard 1 20`, or try a different Hard setting with `HARD='{"samples":2}' npx tsx scripts/tune.ts 1 20`.
+In 30 seat-rotated 3-player games (Easy vs Normal vs Hard, seeds 1–30, ties count for each), Hard won 13, Normal 14 and Easy 5, averaging 4.3, 1.9 and −6.2 VP against the table average. Against the previous evaluator, the new Normal scores 84.5 to the old Normal's 74.3 (one old vs two new) and 86.7 to 80.4 (one new vs two old). The new Hard scores 81.1 to 75.5 and 85.9 to 80.1. Head to head, Hard and Normal are close (within 1 VP), as they were before. CPU games run about 12–14 generations, and an action takes about 45 ms on average for Hard.
+
+What changed in behaviour (90 player-games per level, before → after): Normal funded awards on average in generation 4.3 (63% in generations 1–5) and won 57% of the awards it funded; now it funds in generation 9.1 (9% in generations 1–5) and wins 79%, finishing second in the rest. Easy went from generation 2.1 (88% early, 39% won) to 9.4 (6% early, 83% won), and Hard from 5.1 (51% early, 58% won) to 8.6 (20% early, 77% won).
+
+Scripts:
+- `npx tsx scripts/batch.ts easy,normal,hard 1 20` runs a tournament. Agents `old-easy`, `old-normal` and `old-hard` play the frozen previous evaluator (`scripts/baseline/`), for example `normal,old-normal,old-normal`.
+- `npx tsx scripts/habits.ts normal,normal,normal 1 30` prints a behaviour profile: award and milestone timing and who wins them, standard projects and conversions by generation, plays, research buys and income per generation, M€ left at pass, VP breakdown, corporation picks and results, and first actions.
+- `scripts/verify.sh <outdir> 30` runs the full before/after suite.
+- `why-award.ts`, `inspect.ts`, `trace.ts`, `corps.ts`, `horizon-check.ts`, `award-data.ts` and `award-drift.ts` are diagnostics.
+- Try a different Hard setting with `HARD='{"samples":2}' AGENTS=hard,normal,normal npx tsx scripts/tune.ts 1 20`.
 
 ## Rules implemented
 
