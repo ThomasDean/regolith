@@ -10,8 +10,8 @@ import { shuffle } from '../rng';
 import { promptAnswers, turnActions } from '../moves';
 import { availableSpaces, greeneryCost, score } from '../queries';
 import {
-  cardDrawValue, cardNetValue, clockOf, handValue, horizon, makeCtx, type Clock, opValue, positionValue, prodValue, resUnitValue, resValue,
-  spaceScore, type Ctx, type Weights,
+  cardDrawValue, cardNetValue, clockOf, handValue, hash01, horizon, makeCtx, type Clock, opValue, positionValue, prodValue, resUnitValue, resValue,
+  spaceScore, styleFor, type Ctx, type Weights,
 } from './value';
 
 export interface CpuConfig {
@@ -21,13 +21,36 @@ export interface CpuConfig {
   lookahead: boolean; // consider the second action of the turn
   samples: number; // determinizations for actions that draw cards
   researchMargin: number; // net value a card must clear before buying it
+  personality: number; // how pronounced the seat's play style is (0 = none)
 }
 
 export const LEVELS: Record<Level, CpuConfig> = {
-  easy: { weights: { lambda: 0, synergy: false, tempo: false }, noise: 6, blunder: 0.12, lookahead: false, samples: 1, researchMargin: 0 },
-  normal: { weights: { lambda: 0.3, synergy: true, tempo: false }, noise: 1.5, blunder: 0, lookahead: false, samples: 1, researchMargin: 1.5 },
-  hard: { weights: { lambda: 0.6, synergy: true, tempo: true }, noise: 0, blunder: 0, lookahead: true, samples: 3, researchMargin: 1 },
+  easy: { weights: { lambda: 0, synergy: false, tempo: false, awardRel: 0.3 }, noise: 6, blunder: 0.12, lookahead: false, samples: 1, researchMargin: 0, personality: 1.3 },
+  normal: { weights: { lambda: 0.3, synergy: true, tempo: false, awardRel: 1 }, noise: 1.5, blunder: 0, lookahead: false, samples: 1, researchMargin: 1.5, personality: 1 },
+  hard: { weights: { lambda: 0.6, synergy: true, tempo: true, awardRel: 1, deny: true }, noise: 0, blunder: 0, lookahead: true, samples: 3, researchMargin: 1, personality: 0.6 },
 };
+
+/** The level's settings with this seat's play style mixed in (fixed for the whole game). */
+export function seatConfig(s: GameState, pid: number, level: Level): CpuConfig {
+  const cfg = LEVELS[level];
+  return { ...cfg, weights: { ...cfg.weights, style: styleFor(s.options.seed, pid, cfg.personality) } };
+}
+
+/**
+ * A seeded random source for one decision, derived from the game state. CPU choices are a pure
+ * function of the state, so a game replays (or runs server-side) identically without Math.random.
+ */
+export function stateRnd(s: GameState): Rnd {
+  const tiles = s.board.reduce((a, x) => a + (x.tile ? 1 : 0), 0);
+  const mc = s.players.reduce((a, p) => a * 31 + p.res.mc + p.hand.length * 7 + p.tr * 131, 7);
+  let t = Math.floor(hash01(s.options.seed, s.rng, s.generation, s.active, s.actionsThisTurn, tiles, mc, s.prompt ? s.prompt.pid + 1 : 0) * 2 ** 32) | 0;
+  return () => {
+    t = (t + 0x6d2b79f5) | 0;
+    let x = Math.imul(t ^ (t >>> 15), t | 1);
+    x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 type Rnd = () => number;
 const gauss = (rnd: Rnd) => Math.sqrt(-2 * Math.log(rnd() || 1e-9)) * Math.cos(2 * Math.PI * rnd());
@@ -37,17 +60,28 @@ export function evaluate(s: GameState, pid: number, cfg: CpuConfig, clock: Clock
   const mine = positionValue(s, pid, cfg.weights, { clock });
   if (!cfg.weights.lambda) return mine;
   let best = -Infinity;
-  for (const q of s.players) if (q.id !== pid) best = Math.max(best, positionValue(s, q.id, cfg.weights, { hideHand: true, clock }));
+  // rivals are judged without our own play-style tilt, and by their own award points only (our
+  // side already nets the award race against them)
+  const rw: Weights = { ...cfg.weights, style: undefined, awardRel: 0, deny: false };
+  for (const q of s.players) if (q.id !== pid) best = Math.max(best, positionValue(s, q.id, rw, { hideHand: true, clock }));
   return mine - cfg.weights.lambda * best;
 }
 
 /** Pick the next action for whichever CPU must decide now. */
-export function cpuAction(s: GameState, level: Level, rnd: Rnd = Math.random): Action {
-  const cfg = LEVELS[level];
+export function cpuAction(s: GameState, level: Level, rnd: Rnd = stateRnd(s)): Action {
   const pid = s.prompt ? s.prompt.pid : s.active;
+  const cfg = seatConfig(s, pid, level);
   if (cfg.blunder && rnd() < cfg.blunder && s.phase === 'action' && !s.prompt) {
-    const acts = turnActions(s).filter((a) => a.t !== 'pass');
-    if (acts.length) return acts[Math.floor(rnd() * acts.length)];
+    // a careless move: pick a kind of action first, then one of that kind, so the five award
+    // fundings (or a hand full of plays) don't crowd out everything else; never throw away 8-20
+    // M€ on an award by accident
+    const acts = turnActions(s).filter((a) => a.t !== 'pass' && a.t !== 'endTurn' && a.t !== 'award');
+    const kinds = [...new Set(acts.map((a) => (a.t === 'sp' ? `sp:${a.id}` : a.t)))];
+    if (kinds.length) {
+      const k = kinds[Math.floor(rnd() * kinds.length)];
+      const of = acts.filter((a) => (a.t === 'sp' ? `sp:${a.id}` : a.t) === k);
+      return of[Math.floor(rnd() * of.length)];
+    }
   }
   if (s.prompt) return answerPrompt(s, s.prompt, cfg, rnd);
   switch (s.phase) {
@@ -105,9 +139,9 @@ function candidates(s: GameState, pid: number, ctx: Ctx): Action[] {
 }
 
 /** Debug helper: every candidate with its estimated gain. */
-export function explainTurn(s: GameState, level: Level, rnd: Rnd = Math.random) {
-  const cfg = LEVELS[level];
+export function explainTurn(s: GameState, level: Level, rnd: Rnd = stateRnd(s)) {
   const pid = s.active;
+  const cfg = seatConfig(s, pid, level);
   const clock = clockOf(s);
   const ctx = makeCtx(s, pid, cfg.weights, clock);
   const base = evaluate(s, pid, cfg, clock);
