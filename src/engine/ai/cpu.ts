@@ -25,7 +25,7 @@ export interface CpuConfig {
 }
 
 export const LEVELS: Record<Level, CpuConfig> = {
-  easy: { weights: { lambda: 0, synergy: false, tempo: false, awardRel: 0.3 }, noise: 6, blunder: 0.12, lookahead: false, samples: 1, researchMargin: 0, personality: 1.3 },
+  easy: { weights: { lambda: 0, synergy: false, tempo: false, awardRel: 1 }, noise: 6, blunder: 0.12, lookahead: false, samples: 1, researchMargin: 0, personality: 1.3 },
   normal: { weights: { lambda: 0.3, synergy: true, tempo: false, awardRel: 1 }, noise: 1.5, blunder: 0, lookahead: false, samples: 1, researchMargin: 1.5, personality: 1 },
   hard: { weights: { lambda: 0.6, synergy: true, tempo: true, awardRel: 1, deny: true }, noise: 0, blunder: 0, lookahead: true, samples: 3, researchMargin: 1, personality: 0.6 },
 };
@@ -153,10 +153,14 @@ function chooseTurn(s: GameState, pid: number, cfg: CpuConfig, rnd: Rnd): Action
   const ctx = makeCtx(s, pid, cfg.weights, clock);
   const base = evaluate(s, pid, cfg, clock);
   const scored: { a: Action; v: number; sim?: GameState }[] = [];
+  // Judgement noise is drawn once for all award fundings and damped: with five near-identical
+  // award options, independent noise made one of them look good almost every turn (Easy funded
+  // an award in generation 1 in two games out of three).
+  const awardNoise = gauss(rnd) * cfg.noise * 0.5;
   for (const a of candidates(s, pid, ctx)) {
     const v = valueAfter(s, a, pid, cfg, rnd, clock);
     if (v === null) continue;
-    scored.push({ a, v: v - base + gauss(rnd) * cfg.noise });
+    scored.push({ a, v: v - base + (a.t === 'award' ? awardNoise : gauss(rnd) * cfg.noise) });
   }
   scored.sort((x, y) => y.v - x.v);
   if (cfg.lookahead && s.actionsThisTurn === 0) {

@@ -790,8 +790,11 @@ const phi = (z: number) => {
  * forecast above. A funded award isn't banked at face value: a lead that can still flip, or
  * that rivals can catch, is worth correspondingly less.
  */
-export function awardEV(s: GameState, id: string, gensLeft: number, last = false): number[] {
-  const proj = s.players.map((q) => awardProjection(s, q.id, id, gensLeft, last));
+export function awardEV(s: GameState, id: string, gensLeft: number, last = false, spread = 1): number[] {
+  const proj = s.players.map((q) => {
+    const pr = awardProjection(s, q.id, id, gensLeft, last);
+    return { mean: pr.mean, sd: pr.sd * spread };
+  });
   const n = s.players.length;
   return s.players.map((q) => {
     const me = proj[q.id];
@@ -852,7 +855,9 @@ function awardsTerm(c: Ctx): number {
   const L = awardGensLeft(c);
   const rel = c.w.awardRel ?? 0;
   let total = 0;
-  for (const a of s.awards) total += awardNet(awardEV(s, a.id, L, c.last), c.pid, rel);
+  // a funded award is public: rivals now steer toward it, so its outcome is less settled than
+  // the same lead in an unfunded race
+  for (const a of s.awards) total += awardNet(awardEV(s, a.id, L, c.last, 1.2), c.pid, rel);
   const open = 3 - s.awards.length;
   if (open > 0 && !c.last) {
     // the slot may be gone or dearer by the time we want it
