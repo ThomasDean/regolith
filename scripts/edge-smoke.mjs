@@ -20,6 +20,9 @@ globalThis.fetch = async (url, init = {}) => {
     return users[tok] ? ok({ id: users[tok] }) : new Response('{}', { status: 401 });
   }
   if (init.headers['Content-Profile'] !== 'regolith') throw new Error('missing schema header');
+  const wantKey = process.env.LEGACY_KEYS ? 'a.b.c' : 'sb_secret_test';
+  if (init.headers.apikey !== wantKey) throw new Error('wrong apikey ' + init.headers.apikey);
+  if (!process.env.LEGACY_KEYS && init.headers.Authorization) throw new Error('new secret key must not be sent as Bearer');
   const args = JSON.parse(init.body);
   if (u.endsWith('/rpc/srv_load')) return ok(args.p_room === ROOM ? { room, state, pending } : null);
   if (u.endsWith('/rpc/srv_save')) {
@@ -33,7 +36,9 @@ globalThis.fetch = async (url, init = {}) => {
 
 let handler;
 globalThis.Deno = {
-  env: { get: (k) => ({ SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'a.b.c' })[k] },
+  env: { get: (k) => (process.env.LEGACY_KEYS
+    ? { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'a.b.c', SUPABASE_ANON_KEY: 'x.y.z' }
+    : { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SECRET_KEYS: '{"default":"sb_secret_test"}', SUPABASE_PUBLISHABLE_KEYS: '{"default":"sb_publishable_test"}' })[k] },
   serve: (h) => { handler = h; },
 };
 await import(pathToFileURL('supabase/functions/regolith-play/index.js').href);

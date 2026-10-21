@@ -9,9 +9,16 @@ import type { PlayRequest } from '../src/online/protocol';
 
 declare const Deno: { env: { get(k: string): string | undefined }; serve(h: (r: Request) => Response | Promise<Response>): void };
 
+// Prefer the new sb_secret_/sb_publishable_ keys (JSON maps by name); fall back to the legacy
+// service_role/anon JWT keys, which Supabase retires at the end of 2026.
+const named = (v: string | undefined): string | undefined => {
+  if (!v) return undefined;
+  try { const m = JSON.parse(v) as Record<string, string>; return m.default ?? Object.values(m)[0]; } catch { return undefined; }
+};
 const BASE = Deno.env.get('SUPABASE_URL')!;
-const SERVICE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-const ANON = Deno.env.get('SUPABASE_ANON_KEY') ?? SERVICE;
+const SERVICE = named(Deno.env.get('SUPABASE_SECRET_KEYS')) ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+const ANON = named(Deno.env.get('SUPABASE_PUBLISHABLE_KEYS')) ?? Deno.env.get('SUPABASE_ANON_KEY') ?? SERVICE;
+// legacy keys are JWTs and also go in Authorization; new keys must only be sent as apikey
 const isJwt = (k: string) => k.split('.').length === 3;
 
 const cors = {
