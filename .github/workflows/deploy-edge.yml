@@ -1,0 +1,41 @@
+# Redeploys the online referee (Supabase Edge Function "regolith-play") whenever the rules
+# engine or the referee changes on main, so online games always run the same rules as the site.
+# Needs one repository secret, SUPABASE_ACCESS_TOKEN (supabase.com → Account → Access Tokens).
+# Without it the job skips itself.
+name: Deploy online referee
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/engine/**'
+      - 'src/online/**'
+      - 'server/**'
+      - 'scripts/build-edge.mjs'
+      - 'supabase/config.toml'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF || 'hisostfnkralrabcvqxc' }}
+    steps:
+      - name: Skip without a Supabase token
+        if: env.SUPABASE_ACCESS_TOKEN == ''
+        run: echo "::notice::Add the SUPABASE_ACCESS_TOKEN secret to deploy the online referee automatically."
+      - uses: actions/checkout@v4
+        if: env.SUPABASE_ACCESS_TOKEN != ''
+      - uses: actions/setup-node@v4
+        if: env.SUPABASE_ACCESS_TOKEN != ''
+        with: { node-version: 22, cache: npm }
+      - if: env.SUPABASE_ACCESS_TOKEN != ''
+        run: npm ci
+      - if: env.SUPABASE_ACCESS_TOKEN != ''
+        run: npx vitest run tests/online.test.ts && npm run build:edge && node scripts/edge-smoke.mjs
+      - uses: supabase/setup-cli@v1
+        if: env.SUPABASE_ACCESS_TOKEN != ''
+        with: { version: latest }
+      - if: env.SUPABASE_ACCESS_TOKEN != ''
+        run: supabase functions deploy regolith-play --project-ref "$PROJECT_REF" --no-verify-jwt

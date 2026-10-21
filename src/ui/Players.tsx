@@ -24,7 +24,7 @@ export function ResourceGrid({ s, pid }: { s: GameState; pid: number }) {
   );
 }
 
-export function Players({ s, viewer, onView }: { s: GameState; viewer: number | null; onView: (pid: number) => void }) {
+export function Players({ s, viewer, onView, queued = [] }: { s: GameState; viewer: number | null; onView: (pid: number) => void; queued?: number[] }) {
   const decider = s.prompt ? s.prompt.pid : s.active;
   return (
     <section className="players" aria-label="Players">
@@ -39,7 +39,7 @@ export function Players({ s, viewer, onView }: { s: GameState; viewer: number | 
               </span>
               <div className="player-id">
                 <span className="player-name"><span className="swatch" aria-hidden="true" />{p.name}{viewer === p.id && p.name.trim().toLowerCase() !== 'you' ? ' (you)' : ''}</span>
-                <span className="player-corp">{p.corp ? CARDS[p.corp].name : 'Choosing a corporation'}{p.cpu ? `, ${LEVEL_LABEL[p.cpu]}` : ''}</span>
+                <span className="player-corp">{p.corp ? CARDS[p.corp].name : queued.includes(p.id) ? 'Corporation chosen' : 'Choosing a corporation'}{p.cpu ? `, ${LEVEL_LABEL[p.cpu]}` : ''}</span>
               </div>
               <div className="player-score" title="Victory points if the game ended now">
                 <b><Num value={sc.total} /></b><small>VP</small>

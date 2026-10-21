@@ -1,8 +1,8 @@
 # Regolith
 
-A pass-and-play (hotseat) implementation of the Terraforming Mars base game plus Corporate Era, for 2–5 players at one device, with CPU opponents at three difficulty levels. Mix humans and CPUs freely.
+An implementation of the Terraforming Mars base game plus Corporate Era for 2–5 players, with CPU opponents at three difficulty levels. Play pass-and-play at one device, or online with friends on their own devices. Mix humans and CPUs freely.
 
-It runs entirely in the browser as a static site, so it deploys to Netlify or Vercel with no server.
+Hotseat play runs entirely in the browser as a static site, so it deploys to Netlify or Vercel with no server. Online play adds a small Supabase backend (below).
 
 This is a private, non-commercial project for playing with friends. Game rules can be implemented freely, but the Terraforming Mars name, artwork and card text belong to their publisher (FryxGames), so the app uses its own name, its own visual design and its own effect wording. Keep deployments access-restricted and don't add the publisher's art or branding.
 
@@ -14,7 +14,10 @@ npm run dev          # local dev server
 npm test             # rules tests, 160+ simulated full games, CPU games, synergy checks
 npm run build        # static site in dist/
 npm run build:single # one self-contained dist-single/index.html
+npm run build:edge   # bundle the online referee for Supabase
 ```
+
+To try the online screens without Supabase, open the dev server at `http://localhost:5173/#online-sim`: it runs the real referee in the tab with two human seats (switch between them at the bottom) and a CPU.
 
 ## Deploy
 
@@ -45,6 +48,25 @@ Without the two variables above, Regolith is local-only: games autosave in the b
 
 For local development, `.env.development.local` holds the same two variables (`.env.example` shows the format).
 
+## Online play
+
+The menu's **Host online** button opens a game from the player list: the first seat is you, other Human seats become open seats, and CPU seats stay CPUs. You get a six-letter code and an invite link (`?join=CODE`). Friends enter the code and a name under **Play online** and land in the lobby, which updates live; the host can switch seats between open and the CPU levels, then starts once every seat is filled. Friends don't need an account: they join as guests on their device. Signing in with email instead lets you pick a game up on any device.
+
+- **The server referees.** Every move goes to the `regolith-play` Edge Function, which loads the full game, checks it's your seat's decision, applies it with the same engine, saves, and returns your own view. Other players' hands, the deck order and the random seed never leave the server.
+- **Corporation and research picks happen at the same time.** Make your choice whenever you like; it's applied when your turn in the order comes round, and the top bar shows who the game is still waiting on.
+- **CPU seats** are played on the server one decision at a time. The host's screen asks for each step at its CPU speed, so CPU moves show up paced and animated as in hotseat play; if the host is away, anyone else's screen takes over after a few seconds.
+- **Dropping out.** In a game, the host's **Seats** button hands any seat to an Easy, Normal or Hard CPU, and back to its player later.
+- **Async friendly.** Games live on the server, so players can close the tab and come back; **Play online** lists your games and marks the ones waiting on you. Realtime pushes each change, with a slow poll as a fallback.
+- Undo isn't available online.
+
+### Setting it up (once)
+
+1. **Database:** run `supabase/migrations/20261019000000_regolith_online_rooms.sql` on the Breakthrough Music dev project (SQL editor, or ask Claude to apply it). It adds `regolith.rooms` (members can read their own rooms; realtime is on) and `regolith.room_states` (server only), plus the lobby functions.
+2. **Edge Function:** either add a `SUPABASE_ACCESS_TOKEN` repository secret (supabase.com → Account → Access Tokens) so `.github/workflows/deploy-edge.yml` deploys on every engine change, or run `npx supabase login` then `npm run deploy:edge` locally. It deploys with JWT verification off because it checks the caller's sign-in itself.
+3. **Guests:** Authentication → Sign In / Providers → turn on **Allow anonymous sign-ins**. Without it, everyone signs in by email (which needs custom SMTP for friends, see below).
+
+Tests: `tests/online.test.ts` plays whole online games through the referee from redacted views; `tests/sql.test.ts` runs the migrations in PGlite and checks the lobby functions and permissions; `node scripts/edge-smoke.mjs` plays a game through the built bundle; `node scripts/online-sim-check.mjs` clicks through `#online-sim` in a browser.
+
 ## How it's built
 
 ```
@@ -64,7 +86,10 @@ src/ui/           React UI: SVG map, gauges, player boards, hand, dialogs, cloud
   Fx.tsx          Effects: card-play showcase, animated numbers, toasts, banners, confetti
   Gallery.tsx     Every card's artwork (menu link, or open the site with #gallery)
 src/cloud.ts      Supabase client: sign-in, save, list, load, delete (no-op when unconfigured)
-supabase/         Database migrations for cloud saves
+src/online/       Online play: protocol types, the referee (server rules + redacted views), browser client
+src/ui/Online.tsx Play-online panel, lobby, and the online game screen
+server/edge.ts    Edge Function wrapper around the referee (bundled to supabase/functions/regolith-play)
+supabase/         Database migrations (cloud saves, online rooms) and the Edge Function config
 tests/            Vitest suites
 ```
 
@@ -90,19 +115,34 @@ Each turn a CPU copies the game, reshuffles the deck in its copy (so it can't pe
 - **Pairs across the hand:** when planning (research, starting cards, what a hand is worth), a feeder counts targets it's still holding (Large Convoy with Birds in hand), an accumulator counts the feeders that will fill it (Tardigrades with Symbiotic Fungus in play), and consumers in hand raise the value of what they consume: Steelworks or Ironworks make energy production worth more, Space Elevator makes steel worth more, Caretaker Contract makes heat worth more. Each pair is split between its two cards so it isn't counted twice.
 - **Sequencing** falls out of the simulation: playing Earth Office before the Earth cards, or the animal card before the event that feeds it, scores higher than the reverse.
 - **Research** buys a card only if it adds more to the hand than its 3 M€, given how much money the CPU can expect to spend on cards.
+- **Awards** are forecast, not banked. For each award the CPU projects every player's final metric (tiles and M€ production compound; heat and steel/titanium churn as they're spent) with a spread that grows with the generations left, both fitted on seeded CPU games (`scripts/award-data.ts`). A funded award counts as the expected 5/2 points it will pay, minus what it hands the rivals in the same race. An open award slot keeps an *option* value: the CPU could still fund it later once the race has settled, at the higher 14/20 M€ price and if the slot is still there. So funding pays only when the lead is wide enough, and the game far enough along, that locking it in beats waiting. Milestones are cheap and can't flip, so CPUs claim them as soon as they qualify.
+- **Heat** in stock is worth temperature steps only while steps remain, so the last conversion isn't avoided.
+- **Play styles:** each CPU seat gets a personality from the game seed (balanced, engine builder, terraformer or settler), a few percent of extra weight on production, terraforming, tiles or cards. Two CPUs in the same game lean different ways, but a game replays identically from its seed.
+- **Determinism:** CPU choices never use `Math.random`. When no random source is passed, `cpuAction` derives one from the game state, so the same state always gets the same move (replays and server-side referees agree).
 
 Difficulty changes the weights:
 
 | | Easy | Normal | Hard |
 |---|---|---|---|
 | Tag synergies | No | Yes | Yes |
-| Weighs opponents' gains | No | A little | Strongly (targets the leader, award denial) |
-| Judgement noise | High, some random moves | Low | None |
+| Weighs opponents' gains | No | A little | Strongly (targets the leader) |
+| Award timing | Forecast | Forecast | Forecast + denial (counts a rival's chance to fund a race they lead) |
+| Play style | Pronounced | Moderate | Slight |
+| Judgement noise | High, some random moves (never a random award) | Low | None |
 | Tempo (push to end when ahead) | No | No | Yes |
 | Looks ahead to its second action | No | No | Yes |
 | Samples per card-draw outcome | 1 | 1 | 3 |
 
-In 80 seat-rotated 3-player games (Easy vs Normal vs Hard, ties count for each), Hard won 46, Normal 27 and Easy 7, averaging 85, 81 and 72 VP. CPU games run about 12–14 generations. Re-run with `npx tsx scripts/batch.ts easy,normal,hard 1 20`, or try a different Hard setting with `HARD='{"samples":2}' npx tsx scripts/tune.ts 1 20`.
+In 30 seat-rotated 3-player games (Easy vs Normal vs Hard, seeds 1–30, ties count for each), Hard won 13, Normal 14 and Easy 5, averaging 4.3, 1.9 and −6.2 VP against the table average. Against the previous evaluator, the new Normal scores 84.5 to the old Normal's 74.3 (one old vs two new) and 86.7 to 80.4 (one new vs two old). The new Hard scores 81.1 to 75.5 and 85.9 to 80.1. Head to head, Hard and Normal are close (within 1 VP), as they were before. CPU games run about 12–14 generations, and an action takes about 45 ms on average for Hard.
+
+What changed in behaviour (90 player-games per level, before → after): Normal funded awards on average in generation 4.3 (63% in generations 1–5) and won 57% of the awards it funded; now it funds in generation 9.1 (9% in generations 1–5) and wins 79%, finishing second in the rest. Easy went from generation 2.1 (88% early, 39% won) to 9.4 (6% early, 83% won), and Hard from 5.1 (51% early, 58% won) to 8.6 (20% early, 77% won).
+
+Scripts:
+- `npx tsx scripts/batch.ts easy,normal,hard 1 20` runs a tournament. Agents `old-easy`, `old-normal` and `old-hard` play the frozen previous evaluator (`scripts/baseline/`), for example `normal,old-normal,old-normal`.
+- `npx tsx scripts/habits.ts normal,normal,normal 1 30` prints a behaviour profile: award and milestone timing and who wins them, standard projects and conversions by generation, plays, research buys and income per generation, M€ left at pass, VP breakdown, corporation picks and results, and first actions.
+- `scripts/verify.sh <outdir> 30` runs the full before/after suite.
+- `why-award.ts`, `inspect.ts`, `trace.ts`, `corps.ts`, `horizon-check.ts`, `award-data.ts` and `award-drift.ts` are diagnostics.
+- Try a different Hard setting with `HARD='{"samples":2}' AGENTS=hard,normal,normal npx tsx scripts/tune.ts 1 20`.
 
 ## Rules implemented
 
@@ -126,5 +166,5 @@ In 80 seat-rotated 3-player games (Easy vs Normal vs Hard, ties count for each),
 
 - **M2** Draft variant, solo mode (neutral player, generation limit), Hellas and Elysium maps.
 - **M3** Animations, rules help, better phone layout for the hand.
-- **M4** Online rooms on Supabase (building on the cloud-save tables) with server-side move validation and private hands; CPUs can fill empty seats.
+- **M4** ✓ Online rooms on Supabase with server-side move validation and private hands; CPUs can fill empty seats. Next: chat, turn notifications, rematch.
 - **M5** Prelude and other expansions; stronger Hard CPU via deeper search.

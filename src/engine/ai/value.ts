@@ -7,7 +7,7 @@ import { CARDS, PROJECT_IDS, type CardDef } from '../cards';
 import { P, cities, greeneries, tagCount } from '../helpers';
 import { neighbours } from '../board';
 import {
-  activeCards, AWARDS, awardPlaces, cardCost, greeneryCost, MILESTONES, payLimitsForCard, requirementGap,
+  activeCards, AWARDS, awardCost, cardCost, greeneryCost, MILESTONES, payLimitsForCard, requirementGap,
   requirementsMet, score, stepsLeft, steelValue, titaniumValue,
 } from '../queries';
 
@@ -15,7 +15,54 @@ export interface Weights {
   lambda: number; // how much opponents' gains count against ours
   synergy: boolean; // value tags by how they feed the engine
   tempo: boolean; // speed up or slow down the game depending on who is ahead
+  /** play-style multipliers (a CPU's "personality"); absent = neutral */
+  style?: Style;
+  /** count the chance to shut rivals out of the last award slot (Hard) */
+  deny?: boolean;
+  /** award points are judged against what rivals expect from the same award (0..1) */
+  awardRel?: number;
 }
+
+/**
+ * Play-style multipliers. Each CPU gets one from the game seed and its seat, so two CPUs in the
+ * same game lean different ways but a replayed game plays the same. They are small tilts on top
+ * of the evaluation, not different rules.
+ */
+export interface Style {
+  name: string;
+  prod: number; // production
+  tr: number; // raising global parameters
+  tiles: number; // greeneries and cities
+  cards: number; // cards in hand and card draw
+}
+export const NEUTRAL: Style = { name: 'balanced', prod: 1, tr: 1, tiles: 1, cards: 1 };
+const STYLES: Style[] = [
+  NEUTRAL,
+  { name: 'engine', prod: 1.12, tr: 0.94, tiles: 0.95, cards: 1.08 },
+  { name: 'terraformer', prod: 0.95, tr: 1.1, tiles: 1.02, cards: 0.95 },
+  { name: 'settler', prod: 0.97, tr: 0.98, tiles: 1.15, cards: 0.97 },
+];
+
+/** Small deterministic hash -> [0, 1). Used for seat-specific personality, never for game rules. */
+export function hash01(...xs: number[]): number {
+  let h = 0x9e3779b9;
+  for (const x of xs) {
+    h = Math.imul(h ^ (x | 0), 0x85ebca6b);
+    h ^= h >>> 13;
+    h = Math.imul(h, 0xc2b2ae35);
+    h ^= h >>> 16;
+  }
+  return (h >>> 0) / 4294967296;
+}
+
+/** The play style of seat `pid` in a game with this seed; `amp` scales how pronounced it is. */
+export function styleFor(seed: number, pid: number, amp: number): Style {
+  if (amp <= 0) return NEUTRAL;
+  const base = STYLES[Math.floor(hash01(seed, pid, 1) * STYLES.length)];
+  const tilt = (m: number, k: number) => 1 + (m - 1 + (hash01(seed, pid, k) - 0.5) * 0.06) * amp;
+  return { name: base.name, prod: tilt(base.prod, 2), tr: tilt(base.tr, 3), tiles: tilt(base.tiles, 4), cards: tilt(base.cards, 5) };
+}
+const sty = (c: Ctx): Style => c.w.style ?? NEUTRAL;
 
 // ---------------- horizon ----------------
 /** Expected generations left, counting the current one. */
@@ -87,13 +134,13 @@ export const cardDrawValue = (c: Ctx) => {
   if (c.drawv === undefined) {
     const base = Math.max(1, Math.min(4, 1 + c.G * 0.45));
     c.drawv = base; // provisional, breaks the cycle through hand valuation
-    c.drawv = base * (handOverBudget(c) ? 0.35 : 1);
+    c.drawv = base * (handOverBudget(c) ? 0.35 : 1) * sty(c).cards;
   }
   return c.drawv;
 };
 
 function raiseValue(c: Ctx, param: 'temp' | 'oxy' | 'ocean'): number {
-  let v = trValue(c);
+  let v = trValue(c) * sty(c).tr;
   if (c.w.tempo) {
     // ahead: closing the game out is worth more; behind: every raise hastens a loss
     const lead = leadMargin(c);
@@ -124,7 +171,7 @@ function usesTitanium(c: Ctx) {
 
 export function greeneryValue(c: Ctx): number {
   const oxy = oxyLeft(c.s) > 0 && !c.last ? raiseValue(c, 'oxy') : 0;
-  return c.vp + oxy + 1.5;
+  return (c.vp + 1.5) * sty(c).tiles + oxy;
 }
 
 /**
@@ -169,6 +216,22 @@ export function resValue(c: Ctx, r: Res): number {
   }
 }
 
+/**
+ * A heat stockpile is only worth temperature steps while steps remain: with one step left, 40
+ * heat is one conversion, not five. Valuing every unit at the per-step rate made the last step
+ * look like it destroyed the stockpile, so nobody would take it and games stalled for dozens of
+ * generations a step short of the end.
+ */
+export function heatStockValue(c: Ctx, n: number): number {
+  if (n <= 0) return 0;
+  const unit = resValue(c, 'heat');
+  const p = P(c.s, c.pid);
+  const other = Math.max(p.corp === 'helion' ? resValue(c, 'mc') : 0, p.played.includes('caretaker-contract') ? trValue(c) / 8 * 0.8 : 0);
+  if (other >= unit) return n * unit;
+  const convertible = tempLeft(c.s) * 8;
+  return Math.min(n, convertible) * unit + Math.max(0, n - convertible) * other;
+}
+
 const ENERGY_SINKS: Record<string, number> = {
   ironworks: 4, steelworks: 4, 'ore-processor': 4, 'physics-complex': 6, 'water-splitting-plant': 3,
   'development-center': 1, 'martian-rails': 1, 'power-infrastructure': 2,
@@ -193,7 +256,7 @@ export function prodValue(c: Ctx, r: Res): number {
     unit = have < demand ? 1.6 : resValue(c, 'heat');
   }
   if (r === 'heat') unit = Math.min(unit, tempLeft(c.s) > c.G * 1.2 ? unit : unit * (tempLeft(c.s) / (c.G * 1.2 + 0.1)));
-  return unit * gens * 0.92;
+  return unit * gens * 0.92 * sty(c).prod;
 }
 
 // ---------------- card resources ----------------
@@ -301,7 +364,7 @@ export function opValue(c: Ctx, op: Op, src?: string): number {
       if (op.tile === 'greenery') return greeneryValue(c);
       if (op.tile === 'city') {
         const adj = c.last ? 0.5 : Math.min(2.5, 0.6 + c.G * 0.25);
-        let v = adj * c.vp + 1.5;
+        let v = (adj * c.vp + 1.5) * sty(c).tiles;
         if (op.card === 'capital') v += 1.5 * c.vp;
         const mayor = mayorValue(c);
         return v + mayor;
@@ -426,6 +489,10 @@ export function actionFutureValue(c: Ctx, id: string, usedThisGen: boolean): num
     per -= energyCost[id] * resValue(c, 'heat') * 0.5;
   }
   if (id === 'equatorial-magnetizer') uses = Math.min(uses, p.prod.energy);
+  // UNMI only fires in generations where our TR already rose and 3 M€ and an action are spare,
+  // and each later use is worth less than today's TR; counting every generation at today's
+  // value made it the CPUs' pick 17 times out of 17 while it won 24% of those games
+  if (id === 'united-nations-mars-initiative') uses *= 0.6;
   if (id === 'caretaker-contract') uses = Math.min(uses, (p.prod.heat * c.G + p.res.heat) / 8);
   if (id === 'security-fleet') uses = Math.min(uses, p.prod.titanium * c.G + p.res.titanium);
   if (id === 'space-elevator') uses = Math.min(uses, p.prod.steel * c.G + p.res.steel);
@@ -612,7 +679,8 @@ export function positionBreakdown(s: GameState, pid: number, w: Weights, opts: S
   const c = makeCtx(s, pid, w, opts.clock);
   const p = P(s, pid);
   const out = { score: scoreEV(c) * c.vp, stock: 0, income: 0, engine: 0, hand: 0 };
-  for (const r of ['mc', 'steel', 'titanium', 'plants', 'energy', 'heat'] as Res[]) out.stock += p.res[r] * resValue(c, r);
+  for (const r of ['mc', 'steel', 'titanium', 'plants', 'energy'] as Res[]) out.stock += p.res[r] * resValue(c, r);
+  out.stock += heatStockValue(c, p.res.heat);
   if (!c.last) {
     out.income += (p.tr + p.prod.mc) * prodValue(c, 'mc');
     for (const r of ['steel', 'titanium', 'plants', 'energy', 'heat'] as Res[]) out.income += p.prod[r] * prodValue(c, r);
@@ -656,7 +724,7 @@ export function handValue(c0: Ctx, extra?: string): number {
     if (budget >= r.cost) { v += r.net * 0.7; budget -= r.cost; }
     else v += r.net * 0.1 + 0.4;
   }
-  return v;
+  return v * sty(c).cards;
 }
 
 /** Hand cards we can't fund; drawing more mostly adds sell fodder. */
@@ -666,23 +734,163 @@ export function handOverBudget(c: Ctx): boolean {
   return want > cardBudget(c);
 }
 
+// ---------------- awards ----------------
+/**
+ * Generations of play really left, for award forecasting. The horizon is deliberately short
+ * (it tightens the economy); measured over CPU games, the game actually lasts about 10% longer
+ * plus one generation (scripts/horizon-check.ts).
+ */
+// (the horizon also swings early on after a fast first generation, so it's floored by the
+// typical game length)
+const awardGensLeft = (c: Ctx) => (c.last ? 0.25 : Math.min(14, Math.max(c.G * 1.1 + 0.8, 0.7 * (13 - c.s.generation))));
+
+/**
+ * Spread of each award metric per sqrt(generation), and how the leader's gap tends to grow,
+ * fitted on seeded CPU games (scripts/award-data.ts): tile and income leads widen as engines
+ * compound; heat and steel/titanium stocks churn as they're spent.
+ */
+const AWARD_DRIFT: Record<string, { sd: number; widen: number }> = {
+  landlord: { sd: 1.25, widen: 0.05 },
+  banker: { sd: 2.1, widen: 0.04 },
+  scientist: { sd: 0.6, widen: 0.02 },
+  thermalist: { sd: 4.2, widen: 0 },
+  miner: { sd: 2.6, widen: 0 },
+};
+
+/** Forecast of a player's final award metric: mean and standard deviation. */
+export function awardProjection(s: GameState, pid: number, id: string, gensLeft: number, last = false): { mean: number; sd: number } {
+  const def = AWARDS.find((x) => x.id === id)!;
+  const cur = def.metric(s, pid);
+  const d = AWARD_DRIFT[id];
+  const L = Math.max(0.25, gensLeft);
+  const p = P(s, pid);
+  let mean = cur * (1 + d.widen * Math.min(L, 8));
+  if (id === 'thermalist') {
+    // energy turns into heat at production; heat production keeps coming
+    const k = last ? 1 : Math.min(2.4, 0.7 * L + 0.3);
+    mean = cur + p.res.energy + (p.prod.heat + p.prod.energy) * k;
+  } else if (id === 'miner') {
+    // stocks get spent on building/space cards; production refills them
+    const keep = last ? 1 : Math.max(0.4, 1 - 0.12 * (L - 1));
+    const k = last ? 1 : Math.min(5, 0.9 * Math.max(0, L - 1) + 0.8);
+    mean = cur * keep + (p.prod.steel + p.prod.titanium) * k;
+  }
+  return { mean, sd: d.sd * Math.sqrt(L) };
+}
+
+const phi = (z: number) => {
+  // standard normal CDF (Abramowitz-Stegun 7.1.26)
+  const t = 1 / (1 + 0.3275911 * Math.abs(z) / Math.SQRT2);
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-z * z / 2);
+  return z >= 0 ? (1 + y) / 2 : (1 - y) / 2;
+};
+
+/**
+ * Expected award points (5 for first, 2 for second with 3+ players) for every player, from the
+ * forecast above. A funded award isn't banked at face value: a lead that can still flip, or
+ * that rivals can catch, is worth correspondingly less.
+ */
+export function awardEV(s: GameState, id: string, gensLeft: number, last = false, spread = 1): number[] {
+  const proj = s.players.map((q) => {
+    const pr = awardProjection(s, q.id, id, gensLeft, last);
+    return { mean: pr.mean, sd: pr.sd * spread };
+  });
+  const n = s.players.length;
+  return s.players.map((q) => {
+    const me = proj[q.id];
+    const beat = s.players.filter((r) => r.id !== q.id).map((r) => {
+      const o = proj[r.id];
+      // ties for first both score first, hence the half-step
+      return phi((me.mean - o.mean + 0.5) / Math.max(0.35, Math.hypot(me.sd, o.sd)));
+    });
+    const first = beat.reduce((a, b) => a * b, 1);
+    let second = 0;
+    if (n >= 3) for (let i = 0; i < beat.length; i++) second += (1 - beat[i]) * beat.reduce((a, b, j) => (j === i ? a : a * b), 1);
+    return 5 * first + 2 * second;
+  });
+}
+
+const awardNet = (ev: number[], pid: number, rel: number) =>
+  ev[pid] - rel * ev.reduce((x, y, i) => (i === pid ? x : x + y), 0) / (ev.length - 1);
+
+// probabilists' Gauss-Hermite nodes for E[f(Z)], Z ~ N(0, 1)
+const GH = [[0, 0.5333], [1.3556, 0.2221], [-1.3556, 0.2221], [2.857, 0.01126], [-2.857, 0.01126]];
+
+/**
+ * What it's worth to keep the right to fund this award later, in VP. Waiting lets us fund it
+ * only if we're still ahead near the end; funding now locks in whatever the lead is worth today.
+ * Modelled as a decision with ~1.5 generations left: by then most of the uncertainty about the
+ * final margin over the strongest rival has resolved, and we fund only if it pays.
+ */
+function awardOption(c: Ctx, id: string, L: number, costVP: number, rel: number): number {
+  const s = c.s;
+  if (L <= 1.6) return 0;
+  const proj = s.players.map((q) => awardProjection(s, q.id, id, L));
+  let rival = -1;
+  for (const q of s.players) if (q.id !== c.pid && (rival < 0 || proj[q.id].mean > proj[rival].mean)) rival = q.id;
+  const me = proj[c.pid], ri = proj[rival];
+  const late = AWARD_DRIFT[id].sd * Math.sqrt(1.5) * Math.SQRT2; // margin spread over the last stretch
+  const total = Math.hypot(me.sd, ri.sd);
+  const known = Math.sqrt(Math.max(0, total * total - late * late));
+  const mu = me.mean - ri.mean;
+  const n = s.players.length;
+  let v = 0;
+  for (const [z, w] of GH) {
+    const m = mu + z * known;
+    const p = phi((m + 0.5) / late);
+    const mine = 5 * p + (n >= 3 ? (1 - p) : 0);
+    const theirs = 5 * (1 - p) + (n >= 3 ? 2 * p : 0);
+    v += w * Math.max(0, mine - rel * theirs / (n - 1) - costVP);
+  }
+  return v;
+}
+
+/**
+ * Award points measured against the table: our expected points minus `rel` times what each
+ * rival expects on average (funding hands points to everyone in the race), plus the value of
+ * award slots we could still fund later.
+ */
+function awardsTerm(c: Ctx): number {
+  const s = c.s;
+  const L = awardGensLeft(c);
+  const rel = c.w.awardRel ?? 0;
+  let total = 0;
+  // a funded award is public: rivals now steer toward it, so its outcome is less settled than
+  // the same lead in an unfunded race
+  for (const a of s.awards) total += awardNet(awardEV(s, a.id, L, c.last, 1.2), c.pid, rel);
+  const open = 3 - s.awards.length;
+  if (open > 0 && !c.last) {
+    // the slot may be gone or dearer by the time we want it
+    const costLater = [11, 17, 20][s.awards.length];
+    const costVP = costLater * 0.7 / 9.5; // late-game M€ and VP rates
+    const avail = [0.8, 0.65, 0.5][s.awards.length];
+    const opts: number[] = [];
+    for (const def of AWARDS) if (!s.awards.some((a) => a.id === def.id)) opts.push(awardOption(c, def.id, L, costVP, rel));
+    opts.sort((x, y) => y - x);
+    total += avail * ((opts[0] ?? 0) + (open > 1 ? 0.35 * (opts[1] ?? 0) : 0));
+  }
+  // denial (Hard): while slots are open a rival can fund an award they're winning
+  if (c.w.deny && open > 0) {
+    let threat = 0;
+    for (const def of AWARDS) {
+      if (s.awards.some((a) => a.id === def.id)) continue;
+      const ev = awardEV(s, def.id, L, c.last);
+      for (const q of s.players) {
+        if (q.id === c.pid) continue;
+        if (q.res.mc + q.tr + q.prod.mc < awardCost(s)) continue;
+        threat = Math.max(threat, ev[q.id] - ev[c.pid] - 2);
+      }
+    }
+    total -= 0.35 * threat * (c.G <= 3 ? 1 : 0.4);
+  }
+  return total;
+}
+
 /** Score with awards weighted by how safe the lead is and unclaimed milestones we're close to. */
 export function scoreEV(c: Ctx): number {
   const s = c.s;
   const sc = score(s, c.pid);
-  let total = sc.total - sc.awards;
-  for (const a of s.awards) {
-    const def = AWARDS.find((x) => x.id === a.id)!;
-    const mine = def.metric(s, c.pid);
-    const others = s.players.filter((q) => q.id !== c.pid).map((q) => def.metric(s, q.id));
-    const best = Math.max(...others);
-    const margin = mine - best;
-    const conf = c.last ? (margin >= 0 ? 1 : 0) : 1 / (1 + Math.exp(-margin / (1 + c.G * 0.8)));
-    const pl = awardPlaces(s, a.id);
-    // if we don't end up first, a close second still pays in 3+ player games
-    const second = s.players.length >= 3 ? (pl.second.includes(c.pid) || pl.first.includes(c.pid) ? 1.6 : 0.6) : 0;
-    total += conf * 5 + (1 - conf) * second;
-  }
+  let total = sc.total - sc.awards + awardsTerm(c);
   for (const m of MILESTONES) {
     if (s.milestones.length >= 3 || s.milestones.some((x) => x.id === m.id)) continue;
     // progress toward an open milestone; rises steadily and peaks once we qualify
