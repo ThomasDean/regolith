@@ -95,10 +95,13 @@ export function cpuAction(s: GameState, level: Level, rnd: Rnd = stateRnd(s)): A
 
 // ---------------- simulation ----------------
 function sandbox(s: GameState, rnd: Rnd): GameState {
-  const log = s.log;
+  // the log and the scoreboard history don't affect play; leave them out of the copy
+  const { log, history } = s;
   (s as { log: GameState['log'] }).log = [];
+  s.history = undefined;
   const c = structuredClone(s);
   (s as { log: GameState['log'] }).log = log;
+  s.history = history;
   // determinize hidden information: the deck order is unknown to the CPU
   c.rng = Math.floor(rnd() * 2 ** 31);
   shuffle(c, c.deck);

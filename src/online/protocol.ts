@@ -5,6 +5,9 @@ export type SeatKind = 'human' | 'open' | Level;
 
 export interface SeatRow { kind: SeatKind; name: string; color: string; user: string | null }
 
+/** Map and milestone/award choice for an online game (absent: Tharsis with its own set). */
+export interface RoomSettings { board?: string; milestones?: string[]; awards?: string[] }
+
 /** The public row every member of a room can read (and gets realtime updates for). */
 export interface RoomRow {
   id: string;
@@ -14,6 +17,7 @@ export interface RoomRow {
   seats: SeatRow[];
   members: string[];
   corporate_era: boolean;
+  settings?: RoomSettings;
   version: number;
   phase: string | null;
   generation: number | null;

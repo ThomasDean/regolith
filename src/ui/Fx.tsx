@@ -4,7 +4,7 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { GameState } from '../engine/types';
 import { CARDS } from '../engine/cards';
-import { AWARDS, MILESTONES } from '../engine/queries';
+import { maDef } from '../engine/ma';
 import { Card } from './Card';
 import { rng } from './CardArt';
 
@@ -91,8 +91,8 @@ export function diffEvents(a: GameState, b: GameState): FxEvent[] {
   if (b.temperature !== a.temperature) ev.push({ k: 'param', which: 'temp', delta: b.temperature - a.temperature });
   if (b.oxygen !== a.oxygen) ev.push({ k: 'param', which: 'oxy', delta: b.oxygen - a.oxygen });
   if (b.oceans !== a.oceans) ev.push({ k: 'param', which: 'ocean', delta: b.oceans - a.oceans });
-  for (const m of b.milestones.slice(a.milestones.length)) ev.push({ k: 'milestone', pid: m.pid, name: MILESTONES.find((x) => x.id === m.id)?.name ?? m.id });
-  for (const w of b.awards.slice(a.awards.length)) ev.push({ k: 'award', pid: w.pid, name: AWARDS.find((x) => x.id === w.id)?.name ?? w.id });
+  for (const m of b.milestones.slice(a.milestones.length)) ev.push({ k: 'milestone', pid: m.pid, name: maDef(m.id)?.name ?? m.id });
+  for (const w of b.awards.slice(a.awards.length)) ev.push({ k: 'award', pid: w.pid, name: maDef(w.id)?.name ?? w.id });
   if (b.generation > a.generation) {
     ev.push({ k: 'generation', gen: b.generation, production: b.players.map((p) => ({ pid: p.id, mc: p.res.mc - a.players[p.id].res.mc })) });
   }

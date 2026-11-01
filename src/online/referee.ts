@@ -11,6 +11,8 @@ import { applyActionMut, createGame } from '../engine/game';
 import { cpuAction } from '../engine/ai/cpu';
 import { decider } from '../engine/moves';
 import { HIDDEN, type PlayReply, type PlayRequest, type RoomRow, type SeatRow } from './protocol';
+import { BOARD_IDS, type BoardId } from '../engine/board';
+import { availability, maDef } from '../engine/ma';
 
 export interface Loaded { room: RoomRow; state: GameState | null; pending: Record<string, Action> }
 
@@ -45,6 +47,17 @@ const simultaneous = (s: GameState) => (s.phase === 'setup' || s.phase === 'rese
 
 /** Time a single advance may spend on back-to-back CPU corporation/research picks. */
 const PICK_BUDGET_MS = 700;
+
+/** The room's map and milestones/awards, checked: unknown maps fall back to Tharsis, bad lists are refused. */
+export function gameSettings(room: RoomRow): { board: BoardId; milestones?: string[]; awards?: string[] } {
+  const st = room.settings ?? {};
+  const board = BOARD_IDS.includes(st.board as BoardId) ? (st.board as BoardId) : 'tharsis';
+  const ok = (xs: unknown, kind: 'milestone' | 'award') =>
+    Array.isArray(xs) && xs.length === 5 && new Set(xs).size === 5 && xs.every((id) => typeof id === 'string' && maDef(id)?.kind === kind && !availability(board, id));
+  if (st.milestones !== undefined && !ok(st.milestones, 'milestone')) throw new HttpError(400, 'Those milestones can’t be used');
+  if (st.awards !== undefined && !ok(st.awards, 'award')) throw new HttpError(400, 'Those awards can’t be used');
+  return { board, milestones: st.milestones, awards: st.awards };
+}
 
 export function seatOf(room: RoomRow, uid: string): number {
   return room.seats.findIndex((x) => x.user === uid);
@@ -149,7 +162,7 @@ async function step(req: PlayRequest, uid: string, store: Store, l: Loaded, now:
       if (room.status !== 'lobby' || l.state) return reply(room, l.state, l.pending, uid);
       const open = room.seats.filter((x) => x.kind === 'open').length;
       if (open) throw new HttpError(409, `Waiting for ${open} more player${open === 1 ? '' : 's'} to join`);
-      const s = createGame(room.seats.map((x) => ({ name: x.name, color: x.color, cpu: x.kind === 'human' ? null : (x.kind as Level) })), { corporateEra: room.corporate_era });
+      const s = createGame(room.seats.map((x) => ({ name: x.name, color: x.color, cpu: x.kind === 'human' ? null : (x.kind as Level) })), { corporateEra: room.corporate_era, ...gameSettings(room) });
       const saved = await commit(store, l, patchFor(room, s, {}, []));
       return saved ? reply(saved, s, {}, uid) : null;
     }

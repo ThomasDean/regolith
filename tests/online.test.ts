@@ -62,6 +62,20 @@ describe('online referee', () => {
     expect(JSON.stringify(v)).not.toContain(String(s.options.seed));
   });
 
+  it('starts the game on the room’s map with its milestones and awards', async () => {
+    const store = new MemStore();
+    makeRoom(store, [human(0), cpu(1)]);
+    const ms = ['mayor', 'builder', 'planner', 'gardener', 'legend'], aw = ['banker', 'miner', 'magnate', 'celebrity', 'investor'];
+    store.rooms.get(ID)!.room.settings = { board: 'elysium', milestones: ms, awards: aw };
+    const r = await handle({ op: 'start', room: ID }, 'u0', store);
+    expect(r.view!.options).toMatchObject({ board: 'elysium', milestones: ms, awards: aw });
+    expect(r.view!.board.find((x) => x.id === '20')!.name).toBe('Olympus Mons');
+    const bad = new MemStore();
+    makeRoom(bad, [human(0), cpu(1)]);
+    bad.rooms.get(ID)!.room.settings = { board: 'hellas', milestones: ['geologist', 'builder', 'planner', 'gardener', 'legend'] };
+    await expect(handle({ op: 'start', room: ID }, 'u0', bad)).rejects.toThrow(/milestones/);
+  });
+
   it('only the host starts, only once every seat is filled', async () => {
     const store = new MemStore();
     makeRoom(store, [human(0), { kind: 'open', name: '', color: '', user: null }]);

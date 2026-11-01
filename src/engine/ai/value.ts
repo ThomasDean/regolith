@@ -2,13 +2,14 @@
 // player, and depends on how many generations are likely left: production and card draw are
 // worth a lot early, victory points dominate late.
 import type { CardRes, GameState, Op, Res, Tag } from '../types';
-import { MAX_OCEANS, MAX_OXY, MAX_TEMP, TAGS } from '../types';
+import { TAGS } from '../types';
 import { CARDS, PROJECT_IDS, type CardDef } from '../cards';
 import { P, cities, greeneries, tagCount } from '../helpers';
-import { neighbours } from '../board';
+import { maxOceans, maxOxy, maxTemp, neighbours, params, totalSteps } from '../board';
+import { gameAwards, gameMilestones, inGame, tagRace, awardDef } from '../ma';
 import {
-  activeCards, AWARDS, awardCost, cardCost, greeneryCost, MILESTONES, payLimitsForCard, requirementGap,
-  requirementsMet, score, stepsLeft, steelValue, titaniumValue,
+  activeCards, awardCost, cardCost, greeneryCost, payLimitsForCard, requirementGap,
+  requirementsMet, score, spaceCostApplies, stepsLeft, steelValue, titaniumValue,
 } from '../queries';
 
 export interface Weights {
@@ -124,9 +125,9 @@ const handWithTag = (c: Ctx, t: Tag) => P(c.s, c.pid).hand.filter((id) => CARDS[
 const expectedTagPlays = (c: Ctx, t: Tag) => handWithTag(c, t) * 0.7 + futurePlays(c) * TAG_FREQ[t];
 
 // ---------------- unit values ----------------
-const tempLeft = (s: GameState) => Math.max(0, (MAX_TEMP - s.temperature) / 2);
-const oxyLeft = (s: GameState) => Math.max(0, MAX_OXY - s.oxygen);
-const oceansLeft = (s: GameState) => Math.max(0, MAX_OCEANS - s.oceans);
+const tempLeft = (s: GameState) => Math.max(0, (maxTemp(s) - s.temperature) / 2);
+const oxyLeft = (s: GameState) => Math.max(0, maxOxy(s) - s.oxygen);
+const oceansLeft = (s: GameState) => Math.max(0, maxOceans(s) - s.oceans);
 
 export const trValue = (c: Ctx) => c.vp + (c.last ? 0 : c.G - 0.5);
 export const cardDrawValue = (c: Ctx) => {
@@ -355,7 +356,11 @@ export function opValue(c: Ctx, op: Op, src?: string): number {
     case 'oxy': {
       const n = Math.min(op.n, oxyLeft(s));
       let v = n * raiseValue(c, 'oxy');
-      if (s.oxygen < 8 && s.oxygen + n >= 8 && tempLeft(s) > 0) v += raiseValue(c, 'temp');
+      for (const b of params(s).oxy) {
+        if (s.oxygen >= b.at || s.oxygen + n < b.at) continue;
+        if (b.bonus === 'temp' && tempLeft(s) > 0) v += raiseValue(c, 'temp');
+        if (b.bonus === 'card') v += cardDrawValue(c);
+      }
       return v;
     }
     case 'ocean': return oceansLeft(s) > 0 ? raiseValue(c, 'ocean') : 0;
@@ -413,7 +418,7 @@ export function opValue(c: Ctx, op: Op, src?: string): number {
 }
 
 function mayorValue(c: Ctx): number {
-  if (c.s.milestones.length >= 3 || c.s.milestones.some((m) => m.id === 'mayor')) return 0;
+  if (!inGame(c.s, 'mayor') || c.s.milestones.length >= 3 || c.s.milestones.some((m) => m.id === 'mayor')) return 0;
   const have = cities(c.s, { pid: c.pid }).length;
   return have < 3 ? (5 * c.vp) / (3 - have) / 3 : 0;
 }
@@ -530,11 +535,14 @@ export function tagValue(c: Ctx, t: Tag): number {
     if (a.discount?.tag === t) v += 0; // discounts apply to the card itself, handled in cost
   }
   // milestone / award races
-  if (t === 'building' && !s.milestones.some((m) => m.id === 'builder') && s.milestones.length < 3) {
-    const have = tagCount(s, c.pid, 'building');
-    if (have >= 4 && have < 8) v += (5 * c.vp) / (8 - have) * 0.4;
+  if (s.milestones.length < 3) {
+    for (const m of gameMilestones(s)) {
+      if (!tagRace(m.id)?.includes(t) || s.milestones.some((x) => x.id === m.id)) continue;
+      const have = m.metric(s, c.pid);
+      if (have >= m.need / 2 && have < m.need) v += (5 * c.vp) / (m.need - have) * 0.4;
+    }
   }
-  if (t === 'science' && s.awards.some((a) => a.id === 'scientist')) v += c.vp * 0.6;
+  for (const a of s.awards) if (tagRace(a.id)?.includes(t)) v += c.vp * 0.6 / tagRace(a.id)!.length;
   return v;
 }
 
@@ -742,34 +750,31 @@ export function handOverBudget(c: Ctx): boolean {
  */
 // (the horizon also swings early on after a fast first generation, so it's floored by the
 // typical game length)
-const awardGensLeft = (c: Ctx) => (c.last ? 0.25 : Math.min(14, Math.max(c.G * 1.1 + 0.8, 0.7 * (13 - c.s.generation))));
+const awardGensLeft = (c: Ctx) => (c.last ? 0.25 : Math.min(14 * stretch(c.s), Math.max(c.G * 1.1 + 0.8, 0.7 * (13 * stretch(c.s) - c.s.generation))));
+/** How much longer this board's tracks make a game than Tharsis' 42 steps. */
+const stretch = (s: GameState) => totalSteps(s) / 42;
 
-/**
- * Spread of each award metric per sqrt(generation), and how the leader's gap tends to grow,
- * fitted on seeded CPU games (scripts/award-data.ts): tile and income leads widen as engines
- * compound; heat and steel/titanium stocks churn as they're spent.
- */
-const AWARD_DRIFT: Record<string, { sd: number; widen: number }> = {
-  landlord: { sd: 1.25, widen: 0.05 },
-  banker: { sd: 2.1, widen: 0.04 },
-  scientist: { sd: 0.6, widen: 0.02 },
-  thermalist: { sd: 4.2, widen: 0 },
-  miner: { sd: 2.6, widen: 0 },
-};
+// Spread of each award metric per sqrt(generation), and how the leader's gap tends to grow, live
+// on the award definitions (src/engine/ma.ts), fitted on seeded CPU games (scripts/award-drift.ts).
 
 /** Forecast of a player's final award metric: mean and standard deviation. */
 export function awardProjection(s: GameState, pid: number, id: string, gensLeft: number, last = false): { mean: number; sd: number } {
-  const def = AWARDS.find((x) => x.id === id)!;
+  const def = awardDef(id);
   const cur = def.metric(s, pid);
-  const d = AWARD_DRIFT[id];
+  const d = def.drift;
   const L = Math.max(0.25, gensLeft);
   const p = P(s, pid);
   let mean = cur * (1 + d.widen * Math.min(L, 8));
-  if (id === 'thermalist') {
+  if (def.project === 'heat') {
     // energy turns into heat at production; heat production keeps coming
     const k = last ? 1 : Math.min(2.4, 0.7 * L + 0.3);
     mean = cur + p.res.energy + (p.prod.heat + p.prod.energy) * k;
-  } else if (id === 'miner') {
+  } else if (def.project === 'steelEnergy') {
+    // steel gets spent like Miner's; energy turns to heat, leaving one generation's production at the end
+    const keep = last ? 1 : Math.max(0.4, 1 - 0.12 * (L - 1));
+    const k = last ? 1 : Math.min(5, 0.9 * Math.max(0, L - 1) + 0.8);
+    mean = p.res.steel * keep + p.prod.steel * k + (last ? p.res.energy : p.prod.energy);
+  } else if (def.project === 'metal') {
     // stocks get spent on building/space cards; production refills them
     const keep = last ? 1 : Math.max(0.4, 1 - 0.12 * (L - 1));
     const k = last ? 1 : Math.min(5, 0.9 * Math.max(0, L - 1) + 0.8);
@@ -829,7 +834,7 @@ function awardOption(c: Ctx, id: string, L: number, costVP: number, rel: number)
   let rival = -1;
   for (const q of s.players) if (q.id !== c.pid && (rival < 0 || proj[q.id].mean > proj[rival].mean)) rival = q.id;
   const me = proj[c.pid], ri = proj[rival];
-  const late = AWARD_DRIFT[id].sd * Math.sqrt(1.5) * Math.SQRT2; // margin spread over the last stretch
+  const late = awardDef(id).drift.sd * Math.sqrt(1.5) * Math.SQRT2; // margin spread over the last stretch
   const total = Math.hypot(me.sd, ri.sd);
   const known = Math.sqrt(Math.max(0, total * total - late * late));
   const mu = me.mean - ri.mean;
@@ -865,14 +870,14 @@ function awardsTerm(c: Ctx): number {
     const costVP = costLater * 0.7 / 9.5; // late-game M€ and VP rates
     const avail = [0.8, 0.65, 0.5][s.awards.length];
     const opts: number[] = [];
-    for (const def of AWARDS) if (!s.awards.some((a) => a.id === def.id)) opts.push(awardOption(c, def.id, L, costVP, rel));
+    for (const def of gameAwards(s)) if (!s.awards.some((a) => a.id === def.id)) opts.push(awardOption(c, def.id, L, costVP, rel));
     opts.sort((x, y) => y - x);
     total += avail * ((opts[0] ?? 0) + (open > 1 ? 0.35 * (opts[1] ?? 0) : 0));
   }
   // denial (Hard): while slots are open a rival can fund an award they're winning
   if (c.w.deny && open > 0) {
     let threat = 0;
-    for (const def of AWARDS) {
+    for (const def of gameAwards(s)) {
       if (s.awards.some((a) => a.id === def.id)) continue;
       const ev = awardEV(s, def.id, L, c.last);
       for (const q of s.players) {
@@ -891,7 +896,7 @@ export function scoreEV(c: Ctx): number {
   const s = c.s;
   const sc = score(s, c.pid);
   let total = sc.total - sc.awards + awardsTerm(c);
-  for (const m of MILESTONES) {
+  for (const m of gameMilestones(s)) {
     if (s.milestones.length >= 3 || s.milestones.some((x) => x.id === m.id)) continue;
     // progress toward an open milestone; rises steadily and peaks once we qualify
     const frac = Math.min(1, m.metric(s, c.pid) / m.need);
@@ -902,13 +907,28 @@ export function scoreEV(c: Ctx): number {
   return total;
 }
 
+/** What a space's placement bonuses are worth, net of any M€ it charges. */
+export function bonusValue(c: Ctx, sp: GameState['board'][number]): number {
+  const s = c.s;
+  const charged = spaceCostApplies(s, sp);
+  let v = charged ? -sp.cost! * resValue(c, 'mc') : 0;
+  for (const b of sp.bonus) {
+    if (b === 'card') v += cardDrawValue(c);
+    else if (b === 'wild') v += Math.max(...(['mc', 'steel', 'titanium', 'plants', 'energy', 'heat'] as Res[]).map((r) => resValue(c, r)));
+    else if (b === 'ocean') v += charged ? raiseValue(c, 'ocean') : 0;
+    else if (b === 'temp') v += charged ? raiseValue(c, 'temp') : 0;
+    else v += resValue(c, b);
+  }
+  return v;
+}
+
 /** City-adjacency aware score of placing a tile on a space. */
 export function spaceScore(c: Ctx, id: string, kind: 'city' | 'greenery' | 'ocean' | 'special', card?: string): number {
   const s = c.s;
   const sp = s.board.find((x) => x.id === id)!;
   const pid = c.pid;
   let v = 0;
-  for (const b of sp.bonus) v += b === 'card' ? cardDrawValue(c) : resValue(c, b);
+  v += bonusValue(c, sp);
   const adj = neighbours(s.board, id);
   v += adj.filter((n) => n.tile?.kind === 'ocean').length * 2 * resValue(c, 'mc');
   const emptyLand = adj.filter((n) => !n.tile && n.type === 'land').length;

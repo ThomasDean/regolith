@@ -3,7 +3,7 @@
 //   agents: easy | normal | hard | old-easy | old-normal | old-hard (old-* = frozen pre-rework evaluator)
 // Example: tsx scripts/habits.ts normal,normal,normal 1 30
 import { playSeeded, type Agent } from './sim';
-import { AWARDS, awardCost, awardPlaces, canClaimMilestone, MILESTONES, score } from '../src/engine/queries';
+import { awardCost, awardDef, awardPlaces, canClaimMilestone, gameMilestones, score } from '../src/engine/queries';
 import { CARDS } from '../src/engine/cards';
 import type { GameState } from '../src/engine/types';
 
@@ -64,7 +64,7 @@ for (let g = start; g < start + count; g++) {
     switch (a.t) {
       case 'play': inc(st.plays, s.generation); break;
       case 'award': {
-        const def = AWARDS.find((x) => x.id === a.id)!;
+        const def = awardDef(a.id);
         const mine = def.metric(s, pid);
         const best = Math.max(...s.players.filter((q) => q.id !== pid).map((q) => def.metric(s, q.id)));
         pendingAwards.push({ pid, gen: s.generation, cost: awardCost(s), margin: mine - best, id: a.id });
@@ -78,10 +78,10 @@ for (let g = start; g < start + count; g++) {
       case 'heat': st.heat.push(s.generation); break;
       case 'plants': st.plants.push(s.generation); break;
       case 'endTurn':
-        if (MILESTONES.some((m) => canClaimMilestone(s, pid, m.id))) st.missedMs++;
+        if (gameMilestones(s).some((m) => canClaimMilestone(s, pid, m.id))) st.missedMs++;
         break;
       case 'pass': {
-        if (MILESTONES.some((m) => canClaimMilestone(s, pid, m.id))) st.missedMs++;
+        if (gameMilestones(s).some((m) => canClaimMilestone(s, pid, m.id))) st.missedMs++;
         const mc = s.players[pid].res.mc;
         st.passMc.push(mc); st.passGen.push(s.generation);
         // "last generation" approximated: any global parameter left with few steps

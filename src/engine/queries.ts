@@ -2,10 +2,10 @@
 // awards and scoring.
 import type { CardDef } from './cards';
 import type { GameState, Op, PayLimits, Payment, Placement, Res, StdProject, Tag, TileKind } from './types';
-import { MAX_OCEANS, MAX_OXY, MAX_TEMP } from './types';
 import { CARDS } from './cards';
-import { neighbours, NOCTIS, VOLCANIC, GANYMEDE, PHOBOS, onMars } from './board';
-import { cities, greeneries, marsTiles, ownedTiles, P, tagCount } from './helpers';
+import { neighbours, GANYMEDE, PHOBOS, onMars, maxOceans, maxOxy, maxTemp } from './board';
+import { awardDef, gameAwards, gameMilestones, milestoneDef, MILESTONE_COST } from './ma';
+import { cities, greeneries, ownedTiles, P, tagCount } from './helpers';
 
 export const steelValue = (s: GameState, pid: number) => 2 + (P(s, pid).played.includes('advanced-alloys') ? 1 : 0);
 export const titaniumValue = (s: GameState, pid: number) =>
@@ -84,11 +84,16 @@ const empty = (x: GameState['board'][number], pid: number) => !x.tile && (x.clai
 const isCity = (x: GameState['board'][number]) => x.tile?.kind === 'city';
 
 export function availableSpaces(s: GameState, pid: number, rule: Placement, kind: TileKind): string[] {
-  const land = s.board.filter((x) => x.type === 'land' && empty(x, pid) && x.id !== NOCTIS);
+  const p = P(s, pid);
+  // spaces that charge M€ (Hellas south pole, Vastitas north pole) need the money while their bonus still applies
+  const affordable = (x: GameState['board'][number]) => !x.cost || !spaceCostApplies(s, x) || p.res.mc >= x.cost;
+  const land = s.board.filter((x) => x.type === 'land' && empty(x, pid) && !x.reserved && affordable(x));
   const nextToCity = (x: GameState['board'][number]) => neighbours(s.board, x.id).some(isCity);
   const noNeighbours = (x: GameState['board'][number]) => neighbours(s.board, x.id).every((n) => !n.tile);
   const nextToOwn = (x: GameState['board'][number]) => neighbours(s.board, x.id).some((n) => n.tile && n.tile.owner === pid);
   const mineral = (x: GameState['board'][number]) => x.bonus.includes('steel') || x.bonus.includes('titanium');
+  const hasVolcanoes = s.board.some((x) => x.volcanic);
+  const hasNoctis = s.board.some((x) => x.reserved);
   let out: GameState['board'];
   switch (rule) {
     case 'ocean': out = s.board.filter((x) => x.type === 'ocean' && empty(x, pid)); break;
@@ -100,8 +105,10 @@ export function availableSpaces(s: GameState, pid: number, rule: Placement, kind
     case 'adj2Cities': out = land.filter((x) => neighbours(s.board, x.id).filter(isCity).length >= 2); break;
     case 'adjCity': out = land.filter(nextToCity); break;
     case 'adjGreenery': out = land.filter((x) => neighbours(s.board, x.id).some((n) => n.tile?.kind === 'greenery')); break;
-    case 'volcanic': out = land.filter((x) => VOLCANIC.includes(x.id)); break;
-    case 'noctis': out = s.board.filter((x) => x.id === NOCTIS && empty(x, pid)); break;
+    // maps without volcanoes let Lava Flows go on any land
+    case 'volcanic': out = hasVolcanoes ? land.filter((x) => x.volcanic) : land; break;
+    // maps without a Noctis region place Noctis City like any other city
+    case 'noctis': out = hasNoctis ? s.board.filter((x) => x.reserved && empty(x, pid)) : land.filter((x) => !nextToCity(x)); break;
     case 'ganymede': out = s.board.filter((x) => x.id === GANYMEDE && !x.tile); break;
     case 'phobos': out = s.board.filter((x) => x.id === PHOBOS && !x.tile); break;
     case 'miningRights': out = land.filter(mineral); break;
@@ -113,8 +120,16 @@ export function availableSpaces(s: GameState, pid: number, rule: Placement, kind
       break;
     }
   }
-  if (kind === 'ocean' && s.oceans >= MAX_OCEANS) return [];
+  if (kind === 'ocean' && s.oceans >= maxOceans(s)) return [];
   return out.map((x) => x.id);
+}
+
+/** Whether a space's M€ cost is still charged: only while its ocean or temperature bonus does something. */
+export function spaceCostApplies(s: GameState, x: GameState['board'][number]): boolean {
+  if (!x.cost) return false;
+  if (x.bonus.includes('ocean')) return s.oceans < maxOceans(s);
+  if (x.bonus.includes('temp')) return s.temperature < maxTemp(s);
+  return true;
 }
 
 /** Whether a list of ops can be carried out in full (production floors, stock, tile space…). */
@@ -212,50 +227,35 @@ export const spCost = (s: GameState, pid: number, id: StdProject) => (id === 'po
 export function canSP(s: GameState, pid: number, id: StdProject): boolean {
   const p = P(s, pid);
   if (id === 'sell') return p.hand.length > 0;
-  if (id === 'asteroid' && s.temperature >= MAX_TEMP) return false;
-  if (id === 'aquifer' && s.oceans >= MAX_OCEANS) return false;
+  if (id === 'asteroid' && s.temperature >= maxTemp(s)) return false;
+  if (id === 'aquifer' && s.oceans >= maxOceans(s)) return false;
   if (id === 'greenery' && availableSpaces(s, pid, 'greenery', 'greenery').length === 0) return false;
   if (id === 'city' && availableSpaces(s, pid, 'city', 'city').length === 0) return false;
   return p.res.mc + (p.corp === 'helion' ? p.res.heat : 0) >= spCost(s, pid, id);
 }
 
-export interface Milestone { id: string; name: string; text: string; need: number; metric: (s: GameState, pid: number) => number }
-export interface Award { id: string; name: string; text: string; metric: (s: GameState, pid: number) => number }
-
-export const MILESTONES: Milestone[] = [
-  { id: 'terraformer', name: 'Terraformer', text: 'TR of 35', need: 35, metric: (s, pid) => P(s, pid).tr },
-  { id: 'mayor', name: 'Mayor', text: '3 cities', need: 3, metric: (s, pid) => cities(s, { pid }).length },
-  { id: 'gardener', name: 'Gardener', text: '3 greeneries', need: 3, metric: (s, pid) => greeneries(s, pid).length },
-  { id: 'builder', name: 'Builder', text: '8 building tags', need: 8, metric: (s, pid) => tagCount(s, pid, 'building') },
-  { id: 'planner', name: 'Planner', text: '16 cards in hand', need: 16, metric: (s, pid) => P(s, pid).hand.length },
-];
-
-export const AWARDS: Award[] = [
-  { id: 'landlord', name: 'Landlord', text: 'Most tiles on Mars', metric: (s, pid) => marsTiles(s, pid).length },
-  { id: 'banker', name: 'Banker', text: 'Highest M€ production', metric: (s, pid) => P(s, pid).prod.mc },
-  { id: 'scientist', name: 'Scientist', text: 'Most science tags', metric: (s, pid) => tagCount(s, pid, 'science') },
-  { id: 'thermalist', name: 'Thermalist', text: 'Most heat', metric: (s, pid) => P(s, pid).res.heat },
-  { id: 'miner', name: 'Miner', text: 'Most steel + titanium', metric: (s, pid) => P(s, pid).res.steel + P(s, pid).res.titanium },
-];
-
-export const MILESTONE_COST = 8;
+export { MILESTONE_COST };
+export { MILESTONES, AWARDS, gameMilestones, gameAwards, milestoneDef, awardDef } from './ma';
+export type { Milestone, Award } from './ma';
 export const awardCost = (s: GameState) => [8, 14, 20][s.awards.length] ?? Infinity;
 const canPayMC = (s: GameState, pid: number, n: number) => P(s, pid).res.mc + (P(s, pid).corp === 'helion' ? P(s, pid).res.heat : 0) >= n;
 
 export function canClaimMilestone(s: GameState, pid: number, id: string): boolean {
   if (s.milestones.length >= 3 || s.milestones.some((m) => m.id === id)) return false;
-  const m = MILESTONES.find((x) => x.id === id)!;
+  if (!gameMilestones(s).some((m) => m.id === id)) return false;
+  const m = milestoneDef(id);
   return m.metric(s, pid) >= m.need && canPayMC(s, pid, MILESTONE_COST);
 }
 
 export function canFundAward(s: GameState, pid: number, id: string): boolean {
   if (s.awards.length >= 3 || s.awards.some((a) => a.id === id)) return false;
+  if (!gameAwards(s).some((a) => a.id === id)) return false;
   return canPayMC(s, pid, awardCost(s));
 }
 
 /** First and second place for an award. No second place with two players or a tie for first. */
 export function awardPlaces(s: GameState, id: string): { first: number[]; second: number[] } {
-  const a = AWARDS.find((x) => x.id === id)!;
+  const a = awardDef(id);
   const vals = s.players.map((p) => ({ pid: p.id, v: a.metric(s, p.id) }));
   const top = Math.max(...vals.map((v) => v.v));
   const first = vals.filter((v) => v.v === top).map((v) => v.pid);
@@ -291,8 +291,8 @@ export function score(s: GameState, pid: number): Score {
   return { tr: p.tr, milestones, awards, greeneries: gr, cities: ci, cards, total };
 }
 
-export const parametersMaxed = (s: GameState) => s.temperature >= MAX_TEMP && s.oxygen >= MAX_OXY && s.oceans >= MAX_OCEANS;
-export const stepsLeft = (s: GameState) => (MAX_TEMP - s.temperature) / 2 + (MAX_OXY - s.oxygen) + (MAX_OCEANS - s.oceans);
+export const parametersMaxed = (s: GameState) => s.temperature >= maxTemp(s) && s.oxygen >= maxOxy(s) && s.oceans >= maxOceans(s);
+export const stepsLeft = (s: GameState) => (maxTemp(s) - s.temperature) / 2 + (maxOxy(s) - s.oxygen) + (maxOceans(s) - s.oceans);
 
 export function cardActionAvailable(s: GameState, pid: number, id: string): boolean {
   const p = P(s, pid);

@@ -4,7 +4,7 @@
 import { playSeeded, levelOf, lcg } from './sim';
 import * as cur from '../src/engine/ai/cpu';
 import * as old from './baseline/cpu';
-import { AWARDS, awardCost } from '../src/engine/queries';
+import { awardCost, gameAwards } from '../src/engine/queries';
 import type { GameState } from '../src/engine/types';
 
 const agent = process.argv[2] ?? 'normal';
@@ -21,6 +21,6 @@ for (let g = start; g < start + count; g++) {
   const s = found as GameState;
   const pid = s.active;
   console.log(`\nseed ${g} gen ${s.generation} ${s.players[pid].name} (${s.players[pid].corp}) M€ ${s.players[pid].res.mc}, award cost ${awardCost(s)}`);
-  for (const a of AWARDS) console.log('  ', a.id.padEnd(11), s.players.map((q) => a.metric(s, q.id)).join(' / '));
+  for (const a of gameAwards(s)) console.log('  ', a.id.padEnd(11), s.players.map((q) => a.metric(s, q.id)).join(' / '));
   for (const x of explain(s, levelOf(agent), lcg(g)).slice(0, 8)) console.log('  ', x.v.toFixed(2).padStart(7), JSON.stringify(x.a).slice(0, 80));
 }
