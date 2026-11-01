@@ -101,6 +101,7 @@ function SignIn() {
           <GoogleButton label="Sign in with Google" />
           <button type="button" className="linkish small-print" onClick={() => setUseEmail(true)}>Use email instead</button>
         </div>
+        <p className="muted small-print"><a className="linkish" href="/privacy.html">What Regolith keeps about you</a></p>
       </div>
     );
   }

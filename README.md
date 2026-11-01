@@ -53,7 +53,7 @@ Without the two variables above, Regolith is local-only: games autosave in the b
 
 One-time setup:
 
-1. **Google Cloud** (project `regolith-513420`, Google Auth Platform): audience **External**, published to production (basic `email`/`profile`/`openid` scopes need no Google verification). One OAuth client of type **Web application** with authorized redirect URI `https://hisostfnkralrabcvqxc.supabase.co/auth/v1/callback`.
+1. **Google Cloud** (project `regolith-513420`, Google Auth Platform): audience **External**, published to production. Branding lists `https://regolith-wheat.vercel.app` as the home page, `/privacy.html` (in `public/`) as the privacy policy, and `regolith-wheat.vercel.app` and `hisostfnkralrabcvqxc.supabase.co` as authorized domains (basic `email`/`profile`/`openid` scopes need no Google verification). One OAuth client of type **Web application** with authorized redirect URI `https://hisostfnkralrabcvqxc.supabase.co/auth/v1/callback`.
 2. **Supabase → Authentication → Sign In / Providers → Google:** on, with that client's ID and secret.
 3. **Supabase → Authentication → Sign In / Providers:** turn on **Allow manual linking** (needed for the guest upgrade).
 4. **Supabase → Authentication → URL Configuration → Redirect URLs:** Regolith's Vercel URLs (production and `https://regolith-*.vercel.app/**` for previews) and `http://localhost:5173/**`. The Site URL belongs to Breakthrough Music, which shares the project, so leave it; Regolith always passes its own `redirectTo`.
