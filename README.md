@@ -36,21 +36,35 @@ Both configs send `X-Robots-Tag: noindex` so the site stays out of search engine
 
 ## Cloud saves (Supabase)
 
-Without the two variables above, Regolith is local-only: games autosave in the browser. With them, the menu shows **Cloud saves**: sign in with an emailed link, and every game you play while signed in syncs to Supabase a couple of seconds after each move, so you can pick it up on another device.
+Without the two variables above, Regolith is local-only: games autosave in the browser. With them, the menu shows **Cloud saves**: sign in with Google (or an emailed link), and every game you play while signed in syncs to Supabase a couple of seconds after each move, so you can pick it up on another device.
 
 - Data lives in the `regolith` schema of the Breakthrough Music dev project (free plan, no separate project). Migrations are in `supabase/migrations/`.
 - The `regolith.saves` table can't be read or written directly. The app goes through four functions (`list_saves`, `get_save`, `put_save`, `delete_save`), each limited to the signed-in user's own saves.
 - One-time Supabase settings (dashboard):
   1. **Settings → Data API → Exposed schemas:** add `regolith`.
   2. **Authentication → URL Configuration:** set Site URL to your Vercel URL and add it (plus `http://localhost:5173`) under Redirect URLs, so sign-in links come back to Regolith.
-  3. Optional: **Authentication → Emails → Magic Link** template, add `{{ .Token }}` if you'd like a 6-digit code in the email too; the app accepts either.
-- Supabase's built-in email sender only delivers to your organization's own team members and is rate-limited. To let friends sign in, set up custom SMTP under Authentication → Emails.
+  3. **Google sign-in** (see below).
+  4. Optional: **Authentication → Emails → Magic Link** template, add `{{ .Token }}` if you'd like a 6-digit code in the email too; the app accepts either.
+- Supabase's built-in email sender only delivers to your organization's own team members and is rate-limited, so email sign-in is mainly for you. Friends use Google, or play as guests.
+
+### Google sign-in
+
+**Sign in with Google** is the main way in. A guest who signs in with Google is upgraded in place (`linkIdentity`), so they keep the same user and with it their cloud saves and online games. If that Google account already has its own Regolith user, Supabase refuses the link; the panel explains and offers to switch to that account instead (the guest's games stay with the guest on that device).
+
+One-time setup:
+
+1. **Google Cloud** (project `regolith-513420`, Google Auth Platform): audience **External**, published to production (basic `email`/`profile`/`openid` scopes need no Google verification). One OAuth client of type **Web application** with authorized redirect URI `https://hisostfnkralrabcvqxc.supabase.co/auth/v1/callback`.
+2. **Supabase → Authentication → Sign In / Providers → Google:** on, with that client's ID and secret.
+3. **Supabase → Authentication → Sign In / Providers:** turn on **Allow manual linking** (needed for the guest upgrade).
+4. **Supabase → Authentication → URL Configuration → Redirect URLs:** Regolith's Vercel URLs (production and `https://regolith-*.vercel.app/**` for previews) and `http://localhost:5173/**`. The Site URL belongs to Breakthrough Music, which shares the project, so leave it; Regolith always passes its own `redirectTo`.
+
+Google's consent screen names `hisostfnkralrabcvqxc.supabase.co` as the site you're continuing to. Showing a custom domain there needs Supabase's paid custom-domain add-on.
 
 For local development, `.env.development.local` holds the same two variables (`.env.example` shows the format).
 
 ## Online play
 
-The menu's **Host online** button opens a game from the player list: the first seat is you, other Human seats become open seats, and CPU seats stay CPUs. You get a six-letter code and an invite link (`?join=CODE`). Friends enter the code and a name under **Play online** and land in the lobby, which updates live; the host can switch seats between open and the CPU levels, then starts once every seat is filled. Friends don't need an account: they join as guests on their device. Signing in with email instead lets you pick a game up on any device.
+The menu's **Host online** button opens a game from the player list: the first seat is you, other Human seats become open seats, and CPU seats stay CPUs. You get a six-letter code and an invite link (`?join=CODE`). Friends enter the code and a name under **Play online** and land in the lobby, which updates live; the host can switch seats between open and the CPU levels, then starts once every seat is filled. Friends don't need an account: they join as guests on their device. Signing in with Google (which keeps a guest's games) lets you pick a game up on any device.
 
 - **The server referees.** Every move goes to the `regolith-play` Edge Function, which loads the full game, checks it's your seat's decision, applies it with the same engine, saves, and returns your own view. Other players' hands, the deck order and the random seed never leave the server.
 - **Corporation and research picks happen at the same time.** Make your choice whenever you like; it's applied when your turn in the order comes round, and the top bar shows who the game is still waiting on.
@@ -63,7 +77,7 @@ The menu's **Host online** button opens a game from the player list: the first s
 
 1. **Database:** run `supabase/migrations/20261019000000_regolith_online_rooms.sql` on the Breakthrough Music dev project (SQL editor, or ask Claude to apply it). It adds `regolith.rooms` (members can read their own rooms; realtime is on) and `regolith.room_states` (server only), plus the lobby functions.
 2. **Edge Function:** either add a `SUPABASE_ACCESS_TOKEN` repository secret (supabase.com → Account → Access Tokens) so `.github/workflows/deploy-edge.yml` deploys on every engine change, or run `npx supabase login` then `npm run deploy:edge` locally. It deploys with JWT verification off because it checks the caller's sign-in itself.
-3. **Guests:** Authentication → Sign In / Providers → turn on **Allow anonymous sign-ins**. Without it, everyone signs in by email (which needs custom SMTP for friends, see below).
+3. **Guests:** Authentication → Sign In / Providers → turn on **Allow anonymous sign-ins**. Without it, everyone has to sign in with Google first.
 
 Tests: `tests/online.test.ts` plays whole online games through the referee from redacted views; `tests/sql.test.ts` runs the migrations in PGlite and checks the lobby functions and permissions; `node scripts/edge-smoke.mjs` plays a game through the built bundle; `node scripts/online-sim-check.mjs` clicks through `#online-sim` in a browser.
 
