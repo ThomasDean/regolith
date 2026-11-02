@@ -38,4 +38,5 @@ jobs:
         if: env.SUPABASE_ACCESS_TOKEN != ''
         with: { version: latest }
       - if: env.SUPABASE_ACCESS_TOKEN != ''
-        run: supabase functions deploy regolith-play --project-ref "$PROJECT_REF" --no-verify-jwt
+        # --yes: newer CLIs ask for confirmation and refuse without a terminal
+        run: supabase functions deploy regolith-play --project-ref "$PROJECT_REF" --no-verify-jwt --yes
