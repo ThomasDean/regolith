@@ -1,7 +1,7 @@
 // Shared helpers for the benchmarking scripts: run a seeded CPU game with a named agent per seat.
 // Agent names are a difficulty ('easy' | 'normal' | 'hard') or 'old-<level>' for the frozen
 // pre-rework evaluator in scripts/baseline/ (used for before/after comparisons).
-import { createGame, applyAction } from '../src/engine/game';
+import { createGame, applyAction, type NewGameOptions } from '../src/engine/game';
 import { cpuAction } from '../src/engine/ai/cpu';
 import { cpuAction as oldCpuAction } from './baseline/cpu';
 import type { Action, GameState, Level } from '../src/engine/types';
@@ -20,10 +20,10 @@ export function lcg(seed: number) {
  * Play one game. Seats rotate with the game number so no agent always sits first.
  * `onAction` sees every decision before it is applied.
  */
-export function playSeeded(agents: Agent[], g: number, onAction?: (s: GameState, pid: number, a: Action, seat: Agent[]) => void, maxSteps = 6000) {
+export function playSeeded(agents: Agent[], g: number, onAction?: (s: GameState, pid: number, a: Action, seat: Agent[]) => void, maxSteps = 6000, opts: NewGameOptions = {}) {
   const R = lcg(g * 7919 + 3);
   const seat = agents.map((_, i) => agents[(i + g) % agents.length]);
-  let s = createGame(seat.map((l, i) => ({ name: `${l}${i}`, color: '#000', cpu: levelOf(l) })), { seed: g });
+  let s = createGame(seat.map((l, i) => ({ name: `${l}${i}`, color: '#000', cpu: levelOf(l) })), { ...opts, seed: g });
   let n = 0;
   while (s.phase !== 'over' && n < maxSteps) {
     const pid = s.prompt ? s.prompt.pid : s.active;

@@ -2,31 +2,51 @@
 // Card effects become a queue of ops; an op that needs a decision opens a prompt, and the
 // next action ('answer') resolves it and lets the queue continue.
 import type { Action, GameState, Op, Payment, PayLimits, Player, PlayerSeat, QueueItem, Res, StdProject } from './types';
-import { MAX_OCEANS, MAX_OXY, MAX_TEMP, RESOURCES } from './types';
+import { RESOURCES } from './types';
 import { CARDS, CORP_IDS, PROJECT_IDS, protects, roboticTargets } from './cards';
-import { createBoard, neighbours } from './board';
+import { createBoard, neighbours, maxOceans, maxOxy, maxTemp, params, type BoardId, type TrackBonus } from './board';
+import { boardMA, milestoneDef, awardDef, setupRandom } from './ma';
 import { nextRandom, shuffle } from './rng';
 import { P, space } from './helpers';
 import {
   activeCards, autoPay, availableSpaces, awardCost, canClaimMilestone, canFundAward, canPlayCard, canSP,
-  cardActionAvailable, cardCost, checkPayment, greeneryCost, MILESTONE_COST, MILESTONES, AWARDS, parametersMaxed,
-  payLimitsForCard, spCost, SP_NAME,
+  cardActionAvailable, cardCost, checkPayment, greeneryCost, MILESTONE_COST, parametersMaxed,
+  payLimitsForCard, score, spaceCostApplies, spCost, SP_NAME,
 } from './queries';
 
 const zero = (): Record<Res, number> => ({ mc: 0, steel: 0, titanium: 0, plants: 0, energy: 0, heat: 0 });
 
-export function createGame(players: PlayerSeat[], opts: { seed?: number; corporateEra?: boolean } = {}): GameState {
+export interface NewGameOptions {
+  seed?: number;
+  corporateEra?: boolean;
+  /** map (default Tharsis) */
+  board?: BoardId;
+  /** milestones and awards in play (default: the map's own, gaps filled by a balanced draw) */
+  milestones?: string[];
+  awards?: string[];
+}
+
+export function createGame(players: PlayerSeat[], opts: NewGameOptions = {}): GameState {
   const seed = opts.seed ?? Math.floor(Math.random() * 2 ** 31);
   const corporateEra = opts.corporateEra ?? true;
+  const board = opts.board ?? 'tharsis';
+  let ma = { milestones: opts.milestones, awards: opts.awards };
+  if (!ma.milestones || !ma.awards) {
+    const d = boardMA(board, setupRandom(seed));
+    ma = { milestones: ma.milestones ?? d.milestones, awards: ma.awards ?? d.awards };
+  }
+  if (ma.milestones!.some((id) => !milestoneDef(id)) || ma.awards!.some((id) => !awardDef(id))) fail('Unknown milestone or award');
+  if (new Set(ma.milestones).size !== ma.milestones!.length || new Set(ma.awards).size !== ma.awards!.length) fail('Duplicate milestone or award');
   const s: GameState = {
-    options: { corporateEra, seed }, rng: seed, phase: 'setup', generation: 1, firstPlayer: 0, active: 0, actionsThisTurn: 0,
-    temperature: -30, oxygen: 0, oceans: 0, board: createBoard(),
+    options: { corporateEra, seed, board, milestones: ma.milestones, awards: ma.awards }, rng: seed, phase: 'setup', generation: 1, firstPlayer: 0, active: 0, actionsThisTurn: 0,
+    temperature: -30, oxygen: 0, oceans: 0, board: createBoard(board),
     players: players.map((ps, i): Player => ({
       id: i, name: ps.name, color: ps.color, cpu: ps.cpu, corp: null, tr: 20, res: zero(), prod: zero(), hand: [], played: [],
       cardRes: {}, usedActions: [], passed: false, trRaisedThisGen: false, firstActionDone: false, nextCardDiscount: 0,
       reqBonusNext: 0, stats: { greeneries: 0, citiesPlaced: 0 },
     })),
     deck: [], discard: [], milestones: [], awards: [], queue: [], prompt: null, pendingAction: null, log: [], finalOrder: [], reveal: 0,
+    history: [], raised: players.map(() => ({ temp: 0, oxy: 0, ocean: 0 })), turns: 0,
   };
   s.deck = shuffle(s, PROJECT_IDS.filter((id) => corporateEra || CARDS[id].set === 'base'));
   const corps = shuffle(s, CORP_IDS.filter((id) => corporateEra || CARDS[id].set === 'base'));
@@ -146,9 +166,10 @@ export function applyActionMut(s: GameState, a: Action): GameState {
       return doSP(s, pid, a.id, a.pay, a.cards);
     case 'milestone': {
       if (!canClaimMilestone(s, pid, a.id)) fail('Milestone not available');
-      payMC(s, pid, MILESTONE_COST, a.pay);
+      // Merchant is judged after paying, so it is paid in M€
+      payMC(s, pid, MILESTONE_COST, a.id === 'merchant' ? {} : a.pay);
       s.milestones.push({ id: a.id, pid });
-      log(s, pid, `${p.name} claimed ${MILESTONES.find((m) => m.id === a.id)!.name}.`);
+      log(s, pid, `${p.name} claimed ${milestoneDef(a.id).name}.`);
       return beginAction(s, pid, []);
     }
     case 'award': {
@@ -156,7 +177,7 @@ export function applyActionMut(s: GameState, a: Action): GameState {
       const cost = awardCost(s);
       payMC(s, pid, cost, a.pay);
       s.awards.push({ id: a.id, pid });
-      log(s, pid, `${p.name} funded ${AWARDS.find((m) => m.id === a.id)!.name} for ${cost} M€.`);
+      log(s, pid, `${p.name} funded ${awardDef(a.id).name} for ${cost} M€.`);
       return beginAction(s, pid, []);
     }
     case 'cardAction': {
@@ -184,7 +205,7 @@ export function applyActionMut(s: GameState, a: Action): GameState {
     }
     case 'heat': {
       if (p.res.heat < 8) fail('Not enough heat');
-      if (s.temperature >= MAX_TEMP) fail('Temperature is maxed');
+      if (s.temperature >= maxTemp(s)) fail('Temperature is maxed');
       p.res.heat -= 8;
       log(s, pid, `${p.name} converted 8 heat to raise the temperature.`);
       return beginAction(s, pid, [{ k: 'temp', n: 1 }]);
@@ -215,6 +236,8 @@ function setupPlayer(s: GameState, p: Player, a: Extract<Action, { t: 'setup' }>
 }
 
 function startActions(s: GameState) {
+  // the charts start from everyone's position once corporations are founded
+  if (s.generation === 1 && s.history && !s.history.length) record(s, null);
   s.phase = 'action';
   s.actionsThisTurn = 0;
   s.active = s.firstPlayer;
@@ -232,7 +255,20 @@ function startTurn(s: GameState) {
   }
 }
 
+/** Samples the scoreboard for the end-of-game charts (skipped on CPU sandboxes, which drop the history). */
+function record(s: GameState, pid: number | null) {
+  if (!s.history) return;
+  if (pid !== null) s.turns = (s.turns ?? 0) + 1;
+  const sc = s.players.map((q) => score(s, q.id));
+  s.history.push({
+    gen: s.generation, turn: s.turns ?? 0, pid,
+    vp: sc.map((x) => x.total), tr: s.players.map((q) => q.tr), income: s.players.map((q) => q.tr + q.prod.mc),
+    temp: s.temperature, oxy: s.oxygen, oceans: s.oceans,
+  });
+}
+
 function advanceTurn(s: GameState) {
+  record(s, s.active);
   const n = s.players.length;
   for (let i = 1; i <= n; i++) {
     const next = (s.active + i) % n;
@@ -253,6 +289,7 @@ function endGeneration(s: GameState) {
     for (const r of ['steel', 'titanium', 'plants', 'energy', 'heat'] as Res[]) p.res[r] += p.prod[r];
   }
   log(s, null, `Production for generation ${s.generation}.`);
+  record(s, null);
   if (parametersMaxed(s)) {
     s.phase = 'finalGreenery';
     s.finalOrder = order(s);
@@ -278,6 +315,7 @@ function endGeneration(s: GameState) {
 function endGame(s: GameState) {
   s.phase = 'over';
   s.prompt = null;
+  record(s, null);
   log(s, null, 'Final scoring.');
 }
 
@@ -421,27 +459,28 @@ function resolve(s: GameState, item: QueueItem) {
       return;
     case 'temp': {
       const front: QueueItem[] = [];
-      for (let i = 0; i < op.n && s.temperature < MAX_TEMP; i++) {
+      for (let i = 0; i < op.n && s.temperature < maxTemp(s); i++) {
         s.temperature += 2;
         raiseTR(s, pid, 1);
-        if (s.temperature === -24 || s.temperature === -20) p.prod.heat += 1;
-        if (s.temperature === 0) front.push({ pid, op: { k: 'ocean' } });
+        bump(s, pid, 'temp');
+        for (const b of params(s).temp) if (b.at === s.temperature) trackBonus(s, pid, b.bonus, front);
       }
       pushFront(s, front);
       return;
     }
     case 'oxy': {
       const front: QueueItem[] = [];
-      for (let i = 0; i < op.n && s.oxygen < MAX_OXY; i++) {
+      for (let i = 0; i < op.n && s.oxygen < maxOxy(s); i++) {
         s.oxygen += 1;
         raiseTR(s, pid, 1);
-        if (s.oxygen === 8) front.push({ pid, op: { k: 'temp', n: 1 } });
+        bump(s, pid, 'oxy');
+        for (const b of params(s).oxy) if (b.at === s.oxygen) trackBonus(s, pid, b.bonus, front);
       }
       pushFront(s, front);
       return;
     }
     case 'ocean':
-      if (s.oceans < MAX_OCEANS) pushFront(s, [{ pid, op: { k: 'tile', tile: 'ocean', rule: 'ocean' } }]);
+      if (s.oceans < maxOceans(s)) pushFront(s, [{ pid, op: { k: 'tile', tile: 'ocean', rule: 'ocean' } }]);
       return;
     case 'tile': {
       const options = availableSpaces(s, pid, op.rule, op.tile);
@@ -550,6 +589,22 @@ function resolve(s: GameState, item: QueueItem) {
     }
   }
 }
+
+/** A bonus printed on a global-parameter track, for the player who raised it to that value. */
+function trackBonus(s: GameState, pid: number, b: TrackBonus, front: QueueItem[]) {
+  const p = P(s, pid);
+  if (b === 'heatProd') p.prod.heat += 1;
+  else if (b === 'plantProd') p.prod.plants += 1;
+  else if (b === 'card') p.hand.push(...draw(s, 1));
+  else if (b === 'ocean') front.push({ pid, op: { k: 'ocean' } });
+  else if (b === 'temp') front.push({ pid, op: { k: 'temp', n: 1 } });
+}
+
+function bump(s: GameState, pid: number, k: 'temp' | 'oxy' | 'ocean') {
+  if (s.raised?.[pid]) s.raised[pid][k]++;
+}
+
+const STANDARD_RES: Res[] = ['mc', 'steel', 'titanium', 'plants', 'energy', 'heat'];
 
 const resName = (r: Res) => ({ mc: 'M€', steel: 'steel', titanium: 'titanium', plants: 'plants', energy: 'energy', heat: 'heat' })[r];
 
@@ -676,19 +731,29 @@ function placeTile(s: GameState, item: QueueItem, id: string) {
     return;
   }
   const kind = op.tile;
+  const charged = spaceCostApplies(s, sp);
   sp.tile = { kind, owner: kind === 'ocean' ? null : pid, card: op.card && op.card !== 'flooding' ? op.card : undefined };
   sp.claimedBy = undefined;
+  const front: QueueItem[] = [];
+  if (charged) {
+    p.res.mc = Math.max(0, p.res.mc - sp.cost!);
+    log(s, pid, `${p.name} paid ${sp.cost} M€ for ${sp.name ?? 'the space'}.`);
+  }
   for (const b of sp.bonus) {
     if (b === 'card') p.hand.push(...draw(s, 1));
-    else p.res[b] += 1;
+    else if (b === 'ocean') { if (charged) front.push({ pid, op: { k: 'ocean' } }); }
+    else if (b === 'temp') { if (charged) front.push({ pid, op: { k: 'temp', n: 1 } }); }
+    else if (b === 'wild') {
+      front.push({ pid, op: { k: 'choose', title: 'Take one standard resource', options: STANDARD_RES.map((r) => ({ label: `1 ${resName(r)}`, ok: true, ops: [{ k: 'res', r, n: 1 } as Op] })) } });
+    } else p.res[b] += 1;
   }
   if (op.rule === 'miningRights' || op.rule === 'miningArea') p.prod[sp.bonus.includes('titanium') ? 'titanium' : 'steel'] += 1;
   const oceansNext = neighbours(s.board, id).filter((n) => n.tile?.kind === 'ocean').length;
   p.res.mc += oceansNext * 2;
-  const front: QueueItem[] = [];
   if (kind === 'ocean') {
     s.oceans++;
     raiseTR(s, pid, 1);
+    bump(s, pid, 'ocean');
   }
   if (kind === 'greenery') {
     p.stats.greeneries++;

@@ -3,6 +3,7 @@
 // time, so "per tag" / "per city" amounts are computed against the state when the card resolves.
 import type { CardRes, CardType, GameState, Op, Res, Space, Tag } from './types';
 import { adjacentCount, cardSpace, cities, eventsPlayed, others, P, tagCount } from './helpers';
+import { maxOceans } from './board';
 
 export interface Req {
   temp?: number; tempMax?: number;
@@ -189,7 +190,7 @@ add({
   name: 'Arctic Algae', type: 'active', cost: 12, tags: ['plant'], req: { tempMax: -12 }, text: 'Gain 1 plant. Whenever anyone places an ocean, gain 2 plants.',
   play: () => [R('plants', 1)], onTile: (s, owner, placer, sp) => (sp.tile?.kind === 'ocean' ? [R('plants', 2)] : []),
 });
-add({ name: 'Artificial Lake', type: 'automated', cost: 15, tags: ['building'], vp: 1, req: { temp: -6 }, text: 'Place an ocean on a land space (not an ocean area).', play: (s) => (s.oceans < 9 ? [{ k: 'tile', tile: 'ocean', rule: 'land' }] : []) });
+add({ name: 'Artificial Lake', type: 'automated', cost: 15, tags: ['building'], vp: 1, req: { temp: -6 }, text: 'Place an ocean on a land space (not an ocean area).', play: (s) => (s.oceans < maxOceans(s) ? [{ k: 'tile', tile: 'ocean', rule: 'land' }] : []) });
 add({
   name: 'Artificial Photosynthesis', type: 'automated', cost: 12, tags: ['science'], text: '+2 energy production, or +1 plant production.',
   play: () => [CHOOSE('Artificial Photosynthesis', [{ label: '+2 energy production', ops: [PR('energy', 2)] }, { label: '+1 plant production', ops: [PR('plants', 1)] }])],
@@ -262,7 +263,7 @@ add({
   text: 'Decrease any plant production 1 step. Action: add 1 animal here.', canPlay: (s) => anyProd(s, 'plants', 1), play: () => [DEC('plants', 1)],
   action: { text: 'Add 1 animal here', can: () => true, run: () => [ADD_THIS(1)] },
 });
-add({ name: 'Flooding', type: 'event', cost: 7, tags: [], vp: -1, text: 'Place an ocean. You may take up to 4 M€ from the owner of a tile next to it.', play: (s) => (s.oceans < 9 ? [{ k: 'tile', tile: 'ocean', rule: 'ocean', card: 'flooding' }] : []) });
+add({ name: 'Flooding', type: 'event', cost: 7, tags: [], vp: -1, text: 'Place an ocean. You may take up to 4 M€ from the owner of a tile next to it.', play: (s) => (s.oceans < maxOceans(s) ? [{ k: 'tile', tile: 'ocean', rule: 'ocean', card: 'flooding' }] : []) });
 add({ name: 'Food Factory', type: 'automated', cost: 12, tags: ['building'], vp: 1, text: '−1 plant, +4 M€ production.', play: () => [PR('plants', -1), PR('mc', 4)] });
 add({ name: 'Fusion Power', type: 'automated', cost: 14, tags: ['science', 'power', 'building'], req: { tags: { power: 2 } }, text: '+3 energy production.', play: () => [PR('energy', 3)] });
 add({ name: 'Fueled Generators', type: 'automated', cost: 1, tags: ['power', 'building'], text: '−1 M€, +1 energy production.', play: () => [PR('mc', -1), PR('energy', 1)] });
@@ -317,7 +318,7 @@ add({
   name: 'Large Convoy', type: 'event', cost: 36, tags: ['earth', 'space'], vp: 2, text: 'Place an ocean, draw 2 cards, and gain 5 plants or add 4 animals to a card.',
   play: (s, pid) => [OCEAN, DRAW(2), CHOOSE('Large Convoy', [{ label: 'Gain 5 plants', ops: [R('plants', 5)] }, { label: 'Add 4 animals to a card', ops: [ADD_OTHER('animal', 4)], ok: hasCardWith(s, pid, 'animal') }])],
 });
-add({ name: 'Lava Flows', type: 'event', cost: 18, tags: [], text: 'Raise temperature 2 steps. Place this tile on one of the four volcanoes.', play: (s, pid, id) => [TEMP(2), { k: 'tile', tile: 'special', rule: 'volcanic', card: id }] });
+add({ name: 'Lava Flows', type: 'event', cost: 18, tags: [], text: 'Raise temperature 2 steps. Place this tile on a volcanic area (any land on maps without volcanoes).', play: (s, pid, id) => [TEMP(2), { k: 'tile', tile: 'special', rule: 'volcanic', card: id }] });
 add({ name: 'Lichen', type: 'automated', cost: 7, tags: ['plant'], req: { temp: -24 }, text: '+1 plant production.', play: () => [PR('plants', 1)] });
 add({
   name: 'Livestock', type: 'active', cost: 13, tags: ['animal'], resource: 'animal', vp: perRes(1), vpText: '1 VP per animal', req: { oxy: 9 },
@@ -354,7 +355,7 @@ add({
 });
 add({ name: 'Nitrogen-Rich Asteroid', type: 'event', cost: 31, tags: ['space'], text: '+2 TR, raise temperature 1 step. +1 plant production, or +4 if you have 3 plant tags.', play: (s, pid) => [TR(2), TEMP(), PR('plants', tagCount(s, pid, 'plant') >= 3 ? 4 : 1)] });
 add({ name: 'Nitrophilic Moss', type: 'automated', cost: 8, tags: ['plant'], req: { oceans: 3 }, text: 'Lose 2 plants. +2 plant production.', play: () => [R('plants', -2), PR('plants', 2)] });
-add({ name: 'Noctis City', type: 'automated', cost: 18, tags: ['city', 'building'], text: '−1 energy, +3 M€ production. Place a city on the reserved Noctis City space.', play: () => [PR('energy', -1), PR('mc', 3), { k: 'tile', tile: 'city', rule: 'noctis' }] });
+add({ name: 'Noctis City', type: 'automated', cost: 18, tags: ['city', 'building'], text: '−1 energy, +3 M€ production. Place a city on the reserved Noctis City space (anywhere a city may go on other maps).', play: () => [PR('energy', -1), PR('mc', 3), { k: 'tile', tile: 'city', rule: 'noctis' }] });
 add({ name: 'Noctis Farming', type: 'automated', cost: 10, tags: ['plant', 'building'], vp: 1, req: { temp: -20 }, text: 'Gain 2 plants. +1 M€ production.', play: () => [PR('mc', 1), R('plants', 2)] });
 add({ name: 'Nuclear Power', type: 'automated', cost: 10, tags: ['power', 'building'], text: '−2 M€, +3 energy production.', play: () => [PR('mc', -2), PR('energy', 3)] });
 add({ name: 'Nuclear Zone', type: 'automated', cost: 10, tags: ['earth'], vp: -2, text: 'Place this tile on land. Raise temperature 2 steps.', play: (s, pid, id) => [{ k: 'tile', tile: 'special', rule: 'land', card: id }, TEMP(2)] });

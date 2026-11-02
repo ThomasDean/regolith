@@ -39,8 +39,8 @@ beforeAll(async () => {
   `);
   const dir = 'supabase/migrations';
   for (const f of readdirSync(dir).sort()) await db.exec(readFileSync(`${dir}/${f}`, 'utf8'));
-  // the migration is meant to be safe to re-run
-  await db.exec(readFileSync(`${dir}/20261019000000_regolith_online_rooms.sql`, 'utf8'));
+  // the migrations are meant to be safe to re-run (in order)
+  for (const f of readdirSync(dir).sort()) await db.exec(readFileSync(`${dir}/${f}`, 'utf8'));
 }, 60000);
 
 const seats = JSON.stringify([
@@ -112,6 +112,19 @@ describe('online rooms in the database', () => {
     await as(FRIEND, `select regolith.leave_room($1)`, [room]);
     expect(await as(FRIEND, `select id from regolith.rooms`)).toHaveLength(0);
     expect(await as(HOST, `select id from regolith.rooms`)).toHaveLength(1);
+  });
+
+  it('stores a room’s map and milestone/award choice, keeping only known keys', async () => {
+    const settings = { board: 'hellas', milestones: ['mayor', 'builder', 'planner', 'gardener', 'legend'], awards: ['banker', 'miner', 'magnate', 'celebrity', 'investor'], junk: 'x' };
+    const [r] = await as<{ r: { id: string } }>(HOST, `select regolith.create_room($1::jsonb, true, $2::jsonb) as r`, [seats, JSON.stringify(settings)]);
+    const [row] = await as<{ settings: Record<string, unknown>; seats: object[] }>(HOST, `select settings, seats from regolith.rooms where id = $1`, [r.r.id]);
+    expect(row.settings).toEqual({ board: 'hellas', milestones: settings.milestones, awards: settings.awards });
+    // seat changes without settings keep them; new settings replace them
+    await as(HOST, `select regolith.update_room($1, $2::jsonb, true)`, [r.r.id, JSON.stringify(row.seats)]);
+    expect((await as<{ settings: { board: string } }>(HOST, `select settings from regolith.rooms where id = $1`, [r.r.id]))[0].settings.board).toBe('hellas');
+    await as(HOST, `select regolith.update_room($1, $2::jsonb, true, '{"board":"elysium"}'::jsonb)`, [r.r.id, JSON.stringify(row.seats)]);
+    expect((await as<{ settings: object }>(HOST, `select settings from regolith.rooms where id = $1`, [r.r.id]))[0].settings).toEqual({ board: 'elysium' });
+    await as(HOST, `select regolith.leave_room($1)`, [r.r.id]);
   });
 
   it('closes a lobby when its host leaves', async () => {

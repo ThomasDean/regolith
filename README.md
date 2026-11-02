@@ -1,6 +1,6 @@
 # Regolith
 
-An implementation of the Terraforming Mars base game plus Corporate Era for 2–5 players, with CPU opponents at three difficulty levels. Play pass-and-play at one device, or online with friends on their own devices. Mix humans and CPUs freely.
+An implementation of the Terraforming Mars base game plus Corporate Era for 2–5 players, on seven maps, with CPU opponents at three difficulty levels. Play pass-and-play at one device, or online with friends on their own devices. Mix humans and CPUs freely.
 
 Hotseat play runs entirely in the browser as a static site, so it deploys to Netlify or Vercel with no server. Online play adds a small Supabase backend (below).
 
@@ -75,18 +75,51 @@ The menu's **Host online** button opens a game from the player list: the first s
 
 ### Setting it up (once)
 
-1. **Database:** run `supabase/migrations/20261019000000_regolith_online_rooms.sql` on the Breakthrough Music dev project (SQL editor, or ask Claude to apply it). It adds `regolith.rooms` (members can read their own rooms; realtime is on) and `regolith.room_states` (server only), plus the lobby functions.
+1. **Database:** run `supabase/migrations/20261019000000_regolith_online_rooms.sql` and then `20261101000000_regolith_room_settings.sql` (map and milestone/award choice) on the Breakthrough Music dev project (SQL editor, or ask Claude to apply it). It adds `regolith.rooms` (members can read their own rooms; realtime is on) and `regolith.room_states` (server only), plus the lobby functions.
 2. **Edge Function:** either add a `SUPABASE_ACCESS_TOKEN` repository secret (supabase.com → Account → Access Tokens) so `.github/workflows/deploy-edge.yml` deploys on every engine change, or run `npx supabase login` then `npm run deploy:edge` locally. It deploys with JWT verification off because it checks the caller's sign-in itself.
 3. **Guests:** Authentication → Sign In / Providers → turn on **Allow anonymous sign-ins**. Without it, everyone has to sign in with Google first.
 
 Tests: `tests/online.test.ts` plays whole online games through the referee from redacted views; `tests/sql.test.ts` runs the migrations in PGlite and checks the lobby functions and permissions; `node scripts/edge-smoke.mjs` plays a game through the built bundle; `node scripts/online-sim-check.mjs` clicks through `#online-sim` in a browser.
+
+## Maps, milestones and awards
+
+Pick the map in setup. Each comes from a published box and plays by its own rules:
+
+| Map | From | What's different |
+|---|---|---|
+| Tharsis | Base game | Noctis City's reserved space; Lava Flows on the four volcanoes |
+| Hellas | Hellas & Elysium | South Pole: 6 M€ to place a tile there, and you place an ocean; heat bonuses; no volcanoes (Lava Flows anywhere) |
+| Elysium | Hellas & Elysium | Oceans in the north; four volcanoes (Hecates Tholus, Elysium Mons, Olympus Mons, Arsia Mons) |
+| Utopia Planitia | Utopia & Cimmeria | Energy bonuses and two rich landing sites; no volcanoes |
+| Terra Cimmeria | Utopia & Cimmeria | Oceans along the south edge, metal everywhere; four volcanic areas |
+| Vastitas Borealis | Amazonis & Vastitas | North Pole: 4 M€ to place a tile on the frozen CO₂, which raises the temperature; heat bonuses |
+| Amazonis Planitia | Amazonis & Vastitas | 91 spaces; temperature to +14 °C, oxygen to 18 %, 11 oceans; extra track bonuses (plant production at −12 °C, a card at 7 % oxygen, a temperature step at 11 %); wild resource bonuses |
+
+Everywhere but Tharsis, Noctis City is placed like any other city. Bonuses that need expansions Regolith doesn't have (Turmoil delegates, the Cimmeria colony space) are left off.
+
+**Milestones and awards** (`src/engine/ma.ts`): every map brings its own five and five: 32 milestones and 35 awards in all. Setup shows ten slots. *Map's own* uses the map's set; when one of them needs a missing expansion (Pioneer, Planetologist, Lobbyist) a balanced draw fills that slot. *Shuffle* draws from the whole pool. Pick any slot from the dropdown, or lock it, and shuffles work around it.
+
+Shuffles keep look-alikes apart. Each milestone and award describes what it rewards as a small profile (tiles, greeneries, building tags, steel production, events…), and two of them conflict as much as their profiles overlap, on a 0–9 scale: Gardener and Cultivator are 9, Mayor and Landlord 5, Builder and Scientist 0. A draw keeps every pair at 4 or below, the total across all pairs at 22 or below, and at most three of one kind of play among the ten (two per side). Your own picks are kept even when they clash, with a note in setup. `tests/boards.test.ts` checks 300 draws against the rules.
+
+CPUs value whatever is in play: tag races for any tag milestone or award, the forecast model for every award (spreads fitted per award with `scripts/award-drift-boards.ts`), and the map's bonuses, costs and track lengths. `npx tsx scripts/boards.ts normal,normal,normal 3 [1]` plays CPU games on every map (the `1` uses drawn sets).
+
+## End-of-game analytics
+
+The final screen adds:
+- **Progression chart:** VP, TR or income (TR + M€ production), turn by turn or by generation, with generation markers, a hover/keyboard readout of every player at that point, and end labels. Each player has a marker shape as well as a colour.
+- **Where the points came from:** TR, milestones, awards, greeneries, cities and cards per player.
+- **Highlights:** lead changes, who led the most, the biggest single turn.
+- **Game stats:** cards and events played, tiles, the temperature/oxygen/ocean steps each player raised, final M€ production, milestones and awards.
+
+The engine samples the scoreboard after every turn and every production phase (`history` in the game state, a few kB per game). CPUs leave it out of their simulation copies. Games saved before this change show the table without the chart.
 
 ## How it's built
 
 ```
 src/engine/       Pure TypeScript rules engine (no DOM, no network)
   types.ts        Game state, actions, effect ops, prompts
-  board.ts        The 61-hex map, placement bonuses, Ganymede/Phobos spaces
+  board.ts        The seven maps: layouts, bonuses, special spaces, track lengths and bonuses
+  ma.ts           Milestones and awards: catalogue, metrics, conflict scores, balanced draws
   cards.ts        All 208 project cards and 12 corporations as data + effect functions
   game.ts         createGame + applyAction: every rule is enforced here
   queries.ts      Requirements, costs, payment, legal placements, milestones, awards, scoring
@@ -95,6 +128,8 @@ src/engine/       Pure TypeScript rules engine (no DOM, no network)
   ai/value.ts     Engine-aware valuation (production, TR, VP, tags, discounts, triggers)
   ai/cpu.ts       CPU players: simulate each move, evaluate the result, pick the best
 src/ui/           React UI: SVG map, gauges, player boards, hand, dialogs, cloud-save panel
+  Setup.tsx       Map picker and milestone/award slots (menu and online lobby)
+  Analytics.tsx   End-of-game charts and stats
   CardArt.tsx     Generated illustration for every card (scene from its subject, seeded variation)
   Icons.tsx       Tag and resource glyphs
   Fx.tsx          Effects: card-play showcase, animated numbers, toasts, banners, confetti
@@ -160,11 +195,11 @@ Scripts:
 
 ## Rules implemented
 
-- Tharsis map with placement bonuses, ocean areas, Noctis City, volcanoes, Ganymede and Phobos off-world cities.
+- Seven maps (above) with placement bonuses, ocean areas, Noctis City, volcanoes, Ganymede and Phobos off-world cities.
 - Generation flow: corporation and starting-card choice, research (4 cards, 3 M€ each), 1–2 actions per turn until everyone passes, production (energy becomes heat; M€ = TR + production).
 - Global parameters with their bonuses (heat production at −24 and −20 °C, an ocean at 0 °C, a temperature step at 8 % oxygen), TR for every step.
 - Tile rules: ocean adjacency pays 2 M€, greeneries go next to your tiles when possible, cities can't touch cities, special tiles and their placement rules.
-- Standard projects, plant and heat conversion, milestones (3 max) and awards (3 max, 8/14/20 M€; no second place with two players).
+- Standard projects, plant and heat conversion, milestones (3 max) and awards (3 max, 8/14/20 M€; no second place with two players), from any map's set.
 - Steel, titanium and Helion heat as payment; Advanced Alloys and PhoboLog values; card discounts; requirement bonuses (Inventrix, Adaptation Technology, Special Design); Indentured Workers.
 - All 208 project cards and all 12 corporations, including every action, trigger and protection (Pets, Protected Habitats).
 - Final greenery round, scoring with tiebreak on M€.
@@ -172,13 +207,14 @@ Scripts:
 
 ### Simplifications in this version
 
-- No drafting variant, solo mode or other boards yet.
+- No drafting variant or solo mode yet.
+- The Hellas and Vastitas pole spaces only charge while their bonus still applies (oceans or temperature not yet maxed).
 - Helion's heat can pay for cards, standard projects, milestones and awards, but not for blue-card action costs.
 - When several of your own effects trigger at once, they resolve in a fixed order rather than one you choose.
 
 ## Roadmap
 
-- **M2** Draft variant, solo mode (neutral player, generation limit), Hellas and Elysium maps.
+- **M2** Draft variant, solo mode (neutral player, generation limit). ✓ Maps from Hellas & Elysium, Utopia & Cimmeria and Amazonis & Vastitas; custom and balanced-random milestones and awards; end-of-game analytics.
 - **M3** Animations, rules help, better phone layout for the hand.
 - **M4** ✓ Online rooms on Supabase with server-side move validation and private hands; CPUs can fill empty seats. Next: chat, turn notifications, rematch.
 - **M5** Prelude and other expansions; stronger Hard CPU via deeper search.

@@ -1,4 +1,5 @@
 import { memo } from 'react';
+import { maxOceans, maxOxy, maxTemp } from '../engine/board';
 import type { GameState, Space } from '../engine/types';
 import { CARDS } from '../engine/cards';
 import { hashStr, rng } from './CardArt';
@@ -18,27 +19,31 @@ const hexPath = (cx: number, cy: number, r = R) =>
     return `${(cx + r * Math.cos(a)).toFixed(2)},${(cy + r * Math.sin(a)).toFixed(2)}`;
   }).join(' ');
 
-const BOARD_W = PAD * 2 + W * 9;
-const BOARD_H = PAD * 2 + R * 2 + 8 * R * 1.5;
-const CX = BOARD_W / 2;
-const CY = BOARD_H / 2;
-const PLANET_R = BOARD_H / 2 + 22;
+const GEO = new Map<number, ReturnType<typeof geometry>>();
+/** Cached per map shape (the standard maps share one). */
+const geometryOf = (board: Space[]) => GEO.get(board.length) ?? GEO.set(board.length, geometry(board)).get(board.length)!;
 
-// fixed backdrop: stars outside the disc, craters on it
-const STARS = (() => {
-  const r = rng(7);
-  return Array.from({ length: 90 }, () => {
-    const x = -M + r() * (BOARD_W + 2 * M), y = -M + r() * (BOARD_H + 2 * M);
-    return { x, y, s: 0.4 + r() * 1.1, o: 0.3 + r() * 0.7, tw: r() > 0.8 };
+/** Map geometry: widest row and number of rows set the drawing size (Amazonis Planitia is bigger). */
+function geometry(board: Space[]) {
+  const mars = board.filter((x) => x.type !== 'off');
+  const rows = Math.max(...mars.map((x) => x.row)) + 1;
+  const widest = Math.max(...mars.map((x) => x.x)) / 2 + 1;
+  const BOARD_W = PAD * 2 + W * widest;
+  const BOARD_H = PAD * 2 + R * 2 + (rows - 1) * R * 1.5;
+  const CX = BOARD_W / 2, CY = BOARD_H / 2, PLANET_R = BOARD_H / 2 + 22;
+  // fixed backdrop: stars outside the disc, craters on it
+  const r1 = rng(7);
+  const STARS = Array.from({ length: 90 }, () => {
+    const x = -M + r1() * (BOARD_W + 2 * M), y = -M + r1() * (BOARD_H + 2 * M);
+    return { x, y, s: 0.4 + r1() * 1.1, o: 0.3 + r1() * 0.7, tw: r1() > 0.8 };
   }).filter((st) => Math.hypot(st.x - CX, st.y - CY) > PLANET_R + 6);
-})();
-const CRATERS = (() => {
-  const r = rng(11);
-  return Array.from({ length: 26 }, () => {
-    const a = r() * Math.PI * 2, d = Math.sqrt(r()) * (PLANET_R - 12);
-    return { x: CX + Math.cos(a) * d, y: CY + Math.sin(a) * d, r: 3 + r() * 13 };
+  const r2 = rng(11);
+  const CRATERS = Array.from({ length: 26 }, () => {
+    const a = r2() * Math.PI * 2, d = Math.sqrt(r2()) * (PLANET_R - 12);
+    return { x: CX + Math.cos(a) * d, y: CY + Math.sin(a) * d, r: 3 + r2() * 13 };
   });
-})();
+  return { BOARD_W, BOARD_H, CX, CY, PLANET_R, STARS, CRATERS };
+}
 
 function Bonus({ kinds, cx, cy }: { kinds: string[]; cx: number; cy: number }) {
   return (
@@ -46,6 +51,26 @@ function Bonus({ kinds, cx, cy }: { kinds: string[]; cx: number; cy: number }) {
       {kinds.map((k, i) => {
         const x = cx + (i - (kinds.length - 1) / 2) * 14;
         const y = cy + 8;
+        if (k === 'wild') {
+          return (
+            <g key={i} transform={`translate(${x} ${y})`}>
+              <circle r="6.5" fill="#f3ecdd" stroke="#4b4f66" strokeWidth="1" />
+              <text y="3.6" textAnchor="middle" className="bonus-q">?</text>
+            </g>
+          );
+        }
+        if (k === 'ocean' || k === 'temp') {
+          // pay-to-use spaces: price tag plus what it buys
+          return (
+            <g key={i} transform={`translate(${x} ${y})`}>
+              <rect x="-15" y="-7" width="30" height="14" rx="7" fill="#f3ecdd" stroke="#4b4f66" strokeWidth="1" />
+              <text x="-6" y="3.6" textAnchor="middle" className="bonus-cost">{k === 'ocean' ? 6 : 4}</text>
+              {k === 'ocean'
+                ? <path d="M1,1 q2.5,-3 5,0 t5,0" fill="none" stroke="#2b6cb0" strokeWidth="2" strokeLinecap="round" />
+                : <g><rect x="4" y="-5" width="3.2" height="8" rx="1.6" fill="#c4472f" /><circle cx="5.6" cy="3.6" r="2.6" fill="#c4472f" /></g>}
+            </g>
+          );
+        }
         if (k === 'card') {
           return (
             <g key={i} transform={`translate(${x - 5} ${y - 7})`}>
@@ -55,7 +80,7 @@ function Bonus({ kinds, cx, cy }: { kinds: string[]; cx: number; cy: number }) {
             </g>
           );
         }
-        return <g key={i} transform={`translate(${x - 6.5} ${y - 6.5}) scale(0.81)`}>{resGlyph(k as 'steel' | 'titanium' | 'plants')}</g>;
+        return <g key={i} transform={`translate(${x - 6.5} ${y - 6.5}) scale(0.81)`}>{resGlyph(k as 'steel' | 'titanium' | 'plants' | 'heat' | 'energy')}</g>;
       })}
     </g>
   );
@@ -156,8 +181,9 @@ export const Board = memo(function Board({ s, options, onPick, fresh, pulse }: P
   const fr = new Set(fresh ?? []);
   const mars = s.board.filter((x) => x.type !== 'off');
   const off = s.board.filter((x) => x.type === 'off');
+  const { BOARD_W, BOARD_H, CX, CY, PLANET_R, STARS, CRATERS } = geometryOf(s.board);
   // terraforming progress warms the planet's colour
-  const progress = ((s.temperature + 30) / 38 + s.oxygen / 14 + s.oceans / 9) / 3;
+  const progress = ((s.temperature + 30) / (maxTemp(s) + 30) + s.oxygen / maxOxy(s) + s.oceans / maxOceans(s)) / 3;
   return (
     <div className="board-wrap">
       <svg viewBox={`${-M} ${-M} ${BOARD_W + 2 * M} ${BOARD_H + 2 * M}`} className="board" role="img" aria-label="Map of Mars" style={{ ['--progress' as string]: progress }}>
@@ -231,7 +257,7 @@ export const Board = memo(function Board({ s, options, onPick, fresh, pulse }: P
               onKeyDown={can && onPick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPick(sp.id); } } : undefined}
               tabIndex={can ? 0 : -1}
               role={can ? 'button' : undefined}
-              aria-label={can ? `Place on space ${sp.id}${sp.name ? ` (${sp.name})` : ''}` : undefined}
+              aria-label={can ? `Place on space ${sp.id}${sp.name ? ` (${sp.name})` : ''}${sp.cost ? `, costs ${sp.cost} M€` : ''}` : undefined}
             >
               <polygon
                 points={hexPath(cx, cy, R - 1)}
@@ -244,7 +270,7 @@ export const Board = memo(function Board({ s, options, onPick, fresh, pulse }: P
                 <>
                   <Bonus kinds={sp.bonus} cx={cx} cy={cy} />
                   {sp.name && <text x={cx} y={cy - 9} textAnchor="middle" className={`hex-name ${sp.type === 'ocean' ? 'on-basin' : ''}`}>{sp.name.replace(' Mons', '').replace('Tharsis ', '')}</text>}
-                  {/Mons|Tholus/.test(sp.name ?? '') && <path d={`M${cx - 9},${cy - 13} l5,-7 h8 l5,7`} fill="none" stroke="#7a4a24" strokeWidth="1.2" opacity="0.7" />}
+                  {sp.volcanic && <path d={`M${cx - 9},${cy - 13} l5,-7 h8 l5,7`} fill="none" stroke="#7a4a24" strokeWidth="1.2" opacity="0.7" />}
                 </>
               )}
               {claimed && !sp.tile && <circle cx={cx} cy={cy - 13} r={5} fill={claimed.color} stroke="#1d2840" strokeWidth={1.5}><title>Claimed by {claimed.name}</title></circle>}

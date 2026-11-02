@@ -27,7 +27,8 @@ export type Placement =
   | 'adjGreenery' | 'volcanic' | 'noctis' | 'ganymede' | 'phobos' | 'miningRights' | 'miningArea'
   | 'claim' | 'greenery';
 
-export type SpaceBonus = 'steel' | 'titanium' | 'plants' | 'card';
+/** Placement bonuses. 'wild' = any one standard resource; 'ocean' and 'temp' come with an M€ cost. */
+export type SpaceBonus = 'steel' | 'titanium' | 'plants' | 'card' | 'heat' | 'energy' | 'wild' | 'ocean' | 'temp';
 
 export interface Space {
   id: string;
@@ -38,6 +39,14 @@ export interface Space {
   type: 'land' | 'ocean' | 'off';
   bonus: SpaceBonus[];
   name?: string;
+  /** volcanic area (Lava Flows) */
+  volcanic?: boolean;
+  /** on the map's border (Suburbian) */
+  edge?: boolean;
+  /** reserved for a card (Noctis City on Tharsis) */
+  reserved?: boolean;
+  /** M€ to pay when placing a tile here (Hellas south pole, Vastitas north pole) */
+  cost?: number;
   tile?: { kind: TileKind; owner: number | null; card?: string };
   claimedBy?: number;
 }
@@ -124,8 +133,35 @@ export type Phase = 'setup' | 'research' | 'action' | 'finalGreenery' | 'over';
 
 export interface LogEntry { gen: number; pid: number | null; text: string }
 
+/** One sample of the scoreboard, taken at the end of every turn (for the end-of-game charts). */
+export interface HistoryPoint {
+  gen: number;
+  /** turn number in the game (1-based) */
+  turn: number;
+  /** whose turn just ended; null for the end-of-generation and final samples */
+  pid: number | null;
+  /** per player, current VP total (awards counted as they stand) */
+  vp: number[];
+  tr: number[];
+  /** per player, M€ production + TR (income) */
+  income: number[];
+  temp: number;
+  oxy: number;
+  oceans: number;
+}
+
+export interface GameOptions {
+  corporateEra: boolean;
+  seed: number;
+  /** map; absent = Tharsis (older saves) */
+  board?: import('./board').BoardId;
+  /** milestone and award ids in play; absent = Tharsis' (older saves) */
+  milestones?: string[];
+  awards?: string[];
+}
+
 export interface GameState {
-  options: { corporateEra: boolean; seed: number };
+  options: GameOptions;
   rng: number;
   phase: Phase;
   generation: number;
@@ -150,4 +186,9 @@ export interface GameState {
   finalOrder: number[];
   /** increments whenever hidden information is revealed (cards drawn); used to gate undo */
   reveal: number;
+  /** scoreboard samples for the end-of-game charts (absent in older saves) */
+  history?: HistoryPoint[];
+  /** per player, how many times each global parameter was raised (absent in older saves) */
+  raised?: { temp: number; oxy: number; ocean: number }[];
+  turns?: number;
 }

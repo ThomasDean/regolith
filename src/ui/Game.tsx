@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Action, GameState, Level, Payment, Prompt, StdProject } from '../engine/types';
-import { MAX_TEMP } from '../engine/types';
+import { maxTemp } from '../engine/board';
+import { Analytics } from './Analytics';
 import { applyAction } from '../engine/game';
 import { CARDS } from '../engine/cards';
 import { cpuAction } from '../engine/ai/cpu';
 import {
-  activeCards, autoPay, availableSpaces, awardCost, AWARDS, awardPlaces, canClaimMilestone, canFundAward, canPlayCard, canSP,
-  cardActionAvailable, cardCost, checkPayment, greeneryCost, maxSpend, MILESTONE_COST, MILESTONES, opsFeasible, payLimitsForCard,
+  activeCards, autoPay, availableSpaces, awardCost, gameAwards, awardPlaces, canClaimMilestone, canFundAward, canPlayCard, canSP,
+  cardActionAvailable, cardCost, checkPayment, greeneryCost, maxSpend, MILESTONE_COST, gameMilestones, opsFeasible, payLimitsForCard,
   requirementsMet, score, spCost, SP_NAME, steelValue, titaniumValue, type PayLimits,
 } from '../engine/queries';
 import { Board } from './Board';
@@ -467,8 +468,8 @@ function ActionBar({ s, pid, myTurn, act, panel, setPanel }: { s: GameState; pid
         <button type="button" className="btn small" disabled={!myTurn || p.res.plants < greeneryCost(s, pid) || !availableSpaces(s, pid, 'greenery', 'greenery').length} onClick={() => act({ t: 'plants' })}>
           {greeneryCost(s, pid)} plants → greenery
         </button>
-        <button type="button" className="btn small" disabled={!myTurn || p.res.heat < 8 || s.temperature >= MAX_TEMP} onClick={() => act({ t: 'heat' })}>
-          8 heat → {fmtTemp(Math.min(MAX_TEMP, s.temperature + 2))}
+        <button type="button" className="btn small" disabled={!myTurn || p.res.heat < 8 || s.temperature >= maxTemp(s)} onClick={() => act({ t: 'heat' })}>
+          8 heat → {fmtTemp(Math.min(maxTemp(s), s.temperature + 2))}
         </button>
       </div>
       <div className="ab-group">
@@ -503,7 +504,7 @@ function ActionBar({ s, pid, myTurn, act, panel, setPanel }: { s: GameState; pid
       <div className="ab-group">
         <h3>Milestones <span className="muted">{MILESTONE_COST} M€, {3 - s.milestones.length} left</span></h3>
         <div className="chips">
-          {MILESTONES.map((m) => {
+          {gameMilestones(s).map((m) => {
             const owner = s.milestones.find((x) => x.id === m.id);
             return (
               <button key={m.id} type="button" className="btn small" disabled={!myTurn || !canClaimMilestone(s, pid, m.id)} onClick={() => act({ t: 'milestone', id: m.id, pay: payHelion(MILESTONE_COST) })}
@@ -517,7 +518,7 @@ function ActionBar({ s, pid, myTurn, act, panel, setPanel }: { s: GameState; pid
       <div className="ab-group">
         <h3>Awards <span className="muted">{s.awards.length < 3 ? `${awardCost(s)} M€, ${3 - s.awards.length} left` : 'all funded'}</span></h3>
         <div className="chips">
-          {AWARDS.map((a) => {
+          {gameAwards(s).map((a) => {
             const funded = s.awards.find((x) => x.id === a.id);
             const lead = awardPlaces(s, a.id).first.map((i) => s.players[i].name).join(', ');
             return (
@@ -747,6 +748,7 @@ function GameOver({ s, onExit }: { s: GameState; onExit: () => void }) {
         </tbody>
       </table>
       <p className="muted">Ties go to the player with the most M€ left.</p>
+      <Analytics s={s} />
     </Dialog>
   );
 }

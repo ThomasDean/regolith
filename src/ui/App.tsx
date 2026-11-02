@@ -10,6 +10,8 @@ import { startNewCloudId, useSession } from '../cloud';
 import { hostRoom, OnlinePanel, OnlineRoom } from './Online';
 import { onlineEnabled } from '../online/client';
 import { PLAYER_COLORS, PLAYER_COLOR_NAMES } from './format';
+import type { BoardId } from '../engine/board';
+import { BoardPicker, initialMA, MAPicker, maForBoard, type MAState } from './Setup';
 
 type Seat = { name: string; kind: 'human' | Level; color: string };
 
@@ -41,7 +43,11 @@ function Menu({ saved, onStart, onOnline, onGallery }: { saved: GameState | null
   const [seats, setSeats] = useState<Seat[]>(DEFAULT_SEATS);
   const [corporateEra, setCorporateEra] = useState(true);
   const [seed, setSeed] = useState('');
-  const preview = useMemo(() => createGame([{ name: 'a', color: '#000', cpu: null }, { name: 'b', color: '#000', cpu: null }], { seed: 1 }), []);
+  const [board, setBoard] = useState<BoardId>('tharsis');
+  const [ma, setMA] = useState<MAState>(() => initialMA('tharsis'));
+  const chooseBoard = (b: BoardId) => { setBoard(b); setMA((m) => maForBoard(m, b)); };
+  const preview = useMemo(() => createGame([{ name: 'a', color: '#000', cpu: null }, { name: 'b', color: '#000', cpu: null }], { seed: 1, board }), [board]);
+  const settings = { board, milestones: ma.sel.milestones, awards: ma.sel.awards };
   const update = (i: number, patch: Partial<Seat>) => setSeats((x) => x.map((s, j) => (j === i ? { ...s, ...patch } : s)));
   const addSeat = () => setSeats((x) => {
     const color = PLAYER_COLORS.find((c) => !x.some((s) => s.color === c))!;
@@ -54,7 +60,7 @@ function Menu({ saved, onStart, onOnline, onGallery }: { saved: GameState | null
     clearSave();
     startNewCloudId();
     onStart(createGame(seats.map((s) => ({ name: s.name.trim(), color: s.color, cpu: s.kind === 'human' ? null : s.kind })), {
-      corporateEra, seed: seed.trim() ? Number(seed) || hash(seed) : undefined,
+      corporateEra, seed: seed.trim() ? Number(seed) || hash(seed) : undefined, ...settings,
     }));
   };
   return (
@@ -106,6 +112,12 @@ function Menu({ saved, onStart, onOnline, onGallery }: { saved: GameState | null
           <p><b>Easy</b> plays loosely and ignores you. <b>Normal</b> builds around its tags and discounts. <b>Hard</b> also watches the leader, races milestones and awards, and plans two actions ahead.</p>
         </div>
 
+        <h2>Map</h2>
+        <BoardPicker board={board} onChange={chooseBoard} />
+
+        <h2>Milestones and awards</h2>
+        <MAPicker board={board} st={ma} set={setMA} />
+
         <h2>Options</h2>
         <label className="check"><input type="checkbox" checked={corporateEra} onChange={(e) => setCorporateEra(e.target.checked)} /> Corporate Era cards and corporations (recommended)</label>
         <details className="seed">
@@ -120,7 +132,7 @@ function Menu({ saved, onStart, onOnline, onGallery }: { saved: GameState | null
               title="Other Human seats become open seats for friends to join"
               onClick={async () => {
                 setHosting(true); setHostErr(null);
-                try { onOnline(await hostRoom(seats.map((x) => ({ ...x, name: x.name.trim() })), corporateEra, !!session)); }
+                try { onOnline(await hostRoom(seats.map((x) => ({ ...x, name: x.name.trim() })), corporateEra, !!session, settings)); }
                 catch (e) { setHostErr((e as Error).message); }
                 finally { setHosting(false); }
               }}>

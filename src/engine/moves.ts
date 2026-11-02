@@ -1,11 +1,12 @@
 // Legal move enumeration, used by the CPU players, the fuzz tests and the UI.
 import type { Action, GameState, StdProject } from './types';
-import { MAX_TEMP } from './types';
+import { maxTemp } from './board';
+import { gameAwards, gameMilestones } from './ma';
 import { CARDS } from './cards';
 import { P } from './helpers';
 import {
   autoPay, availableSpaces, awardCost, canClaimMilestone, canFundAward, canPlayCard, canSP, cardActionAvailable,
-  cardCost, greeneryCost, MILESTONES, AWARDS, payLimitsForCard, activeCards,
+  cardCost, greeneryCost, payLimitsForCard, activeCards,
 } from './queries';
 
 export function subsets<T>(items: T[], min: number, max: number, limit = 64): T[][] {
@@ -37,10 +38,10 @@ export function turnActions(s: GameState): Action[] {
   for (const c of activeCards(s, pid)) if (c.action && cardActionAvailable(s, pid, c.id)) out.push({ t: 'cardAction', card: c.id });
   for (const id of ['power', 'asteroid', 'aquifer', 'greenery', 'city'] as StdProject[]) if (canSP(s, pid, id)) out.push({ t: 'sp', id });
   if (p.hand.length) out.push({ t: 'sp', id: 'sell', cards: [p.hand[0]] });
-  for (const m of MILESTONES) if (canClaimMilestone(s, pid, m.id)) out.push({ t: 'milestone', id: m.id });
-  if (awardCost(s) < Infinity) for (const a of AWARDS) if (canFundAward(s, pid, a.id)) out.push({ t: 'award', id: a.id });
+  for (const m of gameMilestones(s)) if (canClaimMilestone(s, pid, m.id)) out.push({ t: 'milestone', id: m.id });
+  if (awardCost(s) < Infinity) for (const a of gameAwards(s)) if (canFundAward(s, pid, a.id)) out.push({ t: 'award', id: a.id });
   if (p.res.plants >= greeneryCost(s, pid) && availableSpaces(s, pid, 'greenery', 'greenery').length) out.push({ t: 'plants' });
-  if (p.res.heat >= 8 && s.temperature < MAX_TEMP) out.push({ t: 'heat' });
+  if (p.res.heat >= 8 && s.temperature < maxTemp(s)) out.push({ t: 'heat' });
   if (s.actionsThisTurn >= 1) out.push({ t: 'endTurn' });
   out.push({ t: 'pass' });
   return out;

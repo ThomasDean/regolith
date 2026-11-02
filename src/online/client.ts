@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { cloudEnabled, sb } from '../cloud';
-import type { PlayReply, PlayRequest, RoomRow, SeatKind } from './protocol';
+import type { PlayReply, PlayRequest, RoomRow, RoomSettings, SeatKind } from './protocol';
 
 export const onlineEnabled = cloudEnabled;
 
@@ -29,12 +29,13 @@ export async function signInGuest() {
   if (error) throw new Error(friendly(error.message));
 }
 
-export async function createRoom(seats: SeatDraft[], corporateEra: boolean): Promise<{ id: string; code: string }> {
-  return must(db().rpc('create_room', { p_seats: seats, p_corporate_era: corporateEra }));
+export async function createRoom(seats: SeatDraft[], corporateEra: boolean, settings?: RoomSettings): Promise<{ id: string; code: string }> {
+  return must(db().rpc('create_room', { p_seats: seats, p_corporate_era: corporateEra, ...(settings ? { p_settings: settings } : {}) }));
 }
 
-export async function updateRoom(id: string, seats: SeatDraft[], corporateEra: boolean) {
-  await must(db().rpc('update_room', { p_room: id, p_seats: seats, p_corporate_era: corporateEra }));
+/** Seats and options; settings left out keep what the room has. */
+export async function updateRoom(id: string, seats: SeatDraft[], corporateEra: boolean, settings?: RoomSettings) {
+  await must(db().rpc('update_room', { p_room: id, p_seats: seats, p_corporate_era: corporateEra, ...(settings ? { p_settings: settings } : {}) }));
 }
 
 export async function joinRoom(code: string, name: string): Promise<string> {
