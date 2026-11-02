@@ -2,7 +2,7 @@
 // handles Web Push for online games: shows "your move" notifications and sets the Home Screen
 // badge to the number of games waiting on you. Plain JS, served as-is from the site root.
 const CACHE = 'regolith-v1';
-const SCOPE = self.registration.scope; // e.g. https://regolith-wheat.vercel.app/
+const SCOPE = self.registration.scope; // e.g. https://playboardgames.vercel.app/
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();

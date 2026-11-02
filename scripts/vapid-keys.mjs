@@ -11,4 +11,4 @@ const pub = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey))
 
 console.log(`VAPID_PUBLIC_KEY=${b64u(pub)}`);
 console.log(`VAPID_PRIVATE_KEY=${jwk.d}`);
-console.log('VAPID_SUBJECT=https://regolith-wheat.vercel.app');
+console.log('VAPID_SUBJECT=https://playboardgames.vercel.app');

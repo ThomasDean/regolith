@@ -43,7 +43,7 @@ async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
 // Push notifications need three function secrets (see README): VAPID_PUBLIC_KEY,
 // VAPID_PRIVATE_KEY and optionally VAPID_SUBJECT. Without them the game works as before.
 const VAPID: Vapid | null = Deno.env.get('VAPID_PUBLIC_KEY') && Deno.env.get('VAPID_PRIVATE_KEY')
-  ? { publicKey: Deno.env.get('VAPID_PUBLIC_KEY')!, privateKey: Deno.env.get('VAPID_PRIVATE_KEY')!, subject: Deno.env.get('VAPID_SUBJECT') ?? 'https://regolith-wheat.vercel.app' }
+  ? { publicKey: Deno.env.get('VAPID_PUBLIC_KEY')!, privateKey: Deno.env.get('VAPID_PRIVATE_KEY')!, subject: Deno.env.get('VAPID_SUBJECT') ?? 'https://playboardgames.vercel.app' }
   : null;
 
 interface Target { user: string; endpoint: string; p256dh: string; auth: string; badge: number }
