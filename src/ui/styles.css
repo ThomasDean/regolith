@@ -503,6 +503,8 @@ button.card:hover { --lift: -4px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 12
 .online-join #online-name { flex: 1 1 140px; }
 .code-input, .online-join .code-input { flex: 0 1 108px; font-family: var(--display); letter-spacing: 0.18em; text-transform: uppercase; }
 .small-print { font-size: 0.82rem; }
+.push-toggle { display: grid; gap: 6px; }
+.push-toggle p { margin: 0; }
 .badge { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 999px; background: var(--o2); color: var(--bg); font-size: 0.72rem; font-family: var(--display); vertical-align: 1px; }
 .start-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .online-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }

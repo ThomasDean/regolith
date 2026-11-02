@@ -79,7 +79,32 @@ The menu's **Host online** button opens a game from the player list: the first s
 2. **Edge Function:** either add a `SUPABASE_ACCESS_TOKEN` repository secret (supabase.com → Account → Access Tokens) so `.github/workflows/deploy-edge.yml` deploys on every engine change, or run `npx supabase login` then `npm run deploy:edge` locally. It deploys with JWT verification off because it checks the caller's sign-in itself.
 3. **Guests:** Authentication → Sign In / Providers → turn on **Allow anonymous sign-ins**. Without it, everyone has to sign in with Google first.
 
-Tests: `tests/online.test.ts` plays whole online games through the referee from redacted views; `tests/sql.test.ts` runs the migrations in PGlite and checks the lobby functions and permissions; `node scripts/edge-smoke.mjs` plays a game through the built bundle; `node scripts/online-sim-check.mjs` clicks through `#online-sim` in a browser.
+Tests: `tests/online.test.ts` plays whole online games through the referee from redacted views; `tests/sql.test.ts` runs the migrations in PGlite and checks the lobby functions and permissions; `node scripts/edge-smoke.mjs` plays a game through the built bundle; `node scripts/edge-push-smoke.mjs` checks that bundle sends a push to the right player's devices; `node scripts/online-sim-check.mjs` clicks through `#online-sim` in a browser.
+
+## Install on a phone, and turn alerts
+
+Regolith is an installable app (PWA): it works offline for hotseat games, opens full screen with its own icon, and can send a notification, with a number on the icon, when it's your move in an online game.
+
+**On iPhone or iPad (iOS 16.4 or later):**
+1. Open the site in Safari, tap **Share**, then **Add to Home Screen**. Web push on iOS only works from the installed app, not from a Safari tab.
+2. Open Regolith from the Home Screen and sign in again. The installed app keeps its own storage, so it doesn't share Safari's sign-in or guest session.
+3. In **Play online**, tap **Alert me on this device when it's my move** and allow notifications.
+
+Android and desktop Chrome work the same way, with or without installing.
+
+What triggers a push: the game starts and you must choose a corporation; a research round opens; it becomes your turn; the game ends. You are never notified about your own move. The badge is the number of games waiting on you, set by the server with each push and recounted whenever the app opens or you finish a move. Each game has one notification, which a newer one replaces.
+
+Limits to know about: iOS requires every push to show a notification, so there are no silent updates; a Focus mode or notification setting on the phone can still hold them back; removing the app from the Home Screen drops the subscription (the server forgets it on the next push).
+
+### Setting it up (once)
+
+1. **Database:** apply `supabase/migrations/20261102000000_regolith_push.sql` (adds `regolith.push_subscriptions` and its functions; nothing is readable except through them).
+2. **VAPID keys:** `node scripts/vapid-keys.mjs` prints a key pair that identifies your server to Apple's and Google's push services. Add the three values as Edge Function secrets (Supabase dashboard → Edge Functions → Secrets, or `npx supabase secrets set --project-ref hisostfnkralrabcvqxc VAPID_PUBLIC_KEY=… VAPID_PRIVATE_KEY=… VAPID_SUBJECT=https://regolith-wheat.vercel.app`). The private key is secret; keep it out of Git and out of any `VITE_` variable. `VAPID_SUBJECT` must be an `https:` or `mailto:` contact. Keep these keys: changing them makes every device re-subscribe.
+3. **Redeploy the Edge Function** (`npm run deploy:edge`, or push to `main` with the token set up above). Without the secrets the game works exactly as before and the alerts button reports that alerts aren't set up.
+
+How it works: the browser fetches the public key from `regolith-play` (`op: "push-key"`), subscribes, and stores the subscription with `save_push_subscription`. After each saved move the referee works out who the game has just started waiting on (`noticesFor` in `src/online/referee.ts`), and the Edge Function encrypts and sends the push (`server/push.ts`: RFC 8291 encryption and VAPID on WebCrypto, no dependencies; checked against the RFC's own test message in `tests/push.test.ts`). Dead devices (404/410) are deleted. Sending runs in the background, so a slow push service never delays a move, and a failure never fails one.
+
+Icons: `node scripts/make-icons.mjs` regenerates `public/icons/` from the hex mark. `public/sw.js` is the service worker; hosts must serve it uncached, which `vercel.json` and `netlify.toml` already do.
 
 ## Maps, milestones and awards
 
@@ -138,6 +163,9 @@ src/cloud.ts      Supabase client: sign-in, save, list, load, delete (no-op when
 src/online/       Online play: protocol types, the referee (server rules + redacted views), browser client
 src/ui/Online.tsx Play-online panel, lobby, and the online game screen
 server/edge.ts    Edge Function wrapper around the referee (bundled to supabase/functions/regolith-play)
+server/push.ts    Web Push sender: payload encryption and VAPID signing on WebCrypto
+src/pwa.ts        Service worker registration, alerts on/off, Home Screen badge, notification links
+public/sw.js      Service worker: offline shell, push and badge handlers
 supabase/         Database migrations (cloud saves, online rooms) and the Edge Function config
 tests/            Vitest suites
 ```
