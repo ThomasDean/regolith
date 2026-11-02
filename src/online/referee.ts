@@ -28,10 +28,22 @@ export interface SavePatch {
   seats: SeatRow[] | null;
 }
 
+/** Something worth a push notification, for the players listed (user ids). */
+export interface Notice {
+  room: string;
+  users: string[];
+  title: string;
+  body: string;
+  /** one notification per game: a newer one replaces the older */
+  tag: string;
+}
+
 export interface Store {
   load(room: string): Promise<Loaded | null>;
   /** Saves if the room is still at `version`; returns the new version, or null if it moved on. */
   save(room: string, version: number, patch: SavePatch): Promise<number | null>;
+  /** Optional: tells players it's their move. Best effort; must never make the move itself fail. */
+  notify?(notice: Notice): void | Promise<void>;
 }
 
 export class HttpError extends Error {
@@ -129,10 +141,51 @@ async function loadRoom(store: Store, id: string, uid: string): Promise<Loaded> 
   return got;
 }
 
+const TURN_TITLE: Record<string, string> = {
+  setup: 'Choose your corporation',
+  research: 'Choose your research cards',
+  finalGreenery: 'Last chance for greenery',
+};
+
+/**
+ * Who to nudge after a save: players whose decision the game has just started waiting on
+ * (a new turn, or a corporation or research choice), or everyone once the game ends. Never
+ * the player who made the move, who is looking at the game already.
+ */
+export function noticesFor(room: RoomRow, patch: SavePatch, actor: string): Notice | null {
+  const seats = patch.seats ?? room.seats;
+  const humans = (idx: number[]) => [...new Set(idx.flatMap((i) => (seats[i]?.kind === 'human' && seats[i].user && seats[i].user !== actor ? [seats[i].user!] : [])))];
+  const others = (u: string) => seats.filter((x) => x.user !== u).map((x) => x.name);
+  const withWho = (u: string) => { const n = others(u); return n.length ? ` · with ${n.length > 2 ? `${n[0]} and ${n.length - 1} others` : n.join(' and ')}` : ''; };
+
+  if (patch.status === 'over' && room.status !== 'over') {
+    const users = humans(seats.map((_, i) => i));
+    return users.length ? { room: room.id, users, title: 'Game over', body: `Generation ${patch.generation}: the final scores are in.`, tag: room.id } : null;
+  }
+  if (patch.status !== 'playing') return null;
+  // a seat handed back from a CPU to its player while the game waits on it counts as new, too
+  const handedBack = (patch.seats ?? []).flatMap((x, i) => (x.kind === 'human' && room.seats[i]?.kind !== 'human' ? [i] : []));
+  const fresh = patch.waiting.filter((w) => !room.waiting.includes(w) || handedBack.includes(w));
+  const users = humans(fresh);
+  if (!users.length) return null;
+  const title = TURN_TITLE[patch.phase] ?? 'Your turn';
+  // name the other players when there is a single recipient; otherwise keep it generic
+  const body = `Generation ${patch.generation}${users.length === 1 ? withWho(users[0]) : ''}`;
+  return { room: room.id, users, title, body, tag: room.id };
+}
+
 /** Saves, or says the room changed underneath us. */
-async function commit(store: Store, l: Loaded, patch: SavePatch): Promise<RoomRow | null> {
+async function commit(store: Store, l: Loaded, patch: SavePatch, actor: string): Promise<RoomRow | null> {
   const v = await store.save(l.room.id, l.room.version, patch);
   if (v === null) return null;
+  if (store.notify) {
+    try {
+      const n = noticesFor(l.room, patch, actor);
+      if (n) Promise.resolve(store.notify(n)).catch((e) => console.error('notify failed', e));
+    } catch (e) {
+      console.error('notify failed', e);
+    }
+  }
   return {
     ...l.room, version: v, status: patch.status, phase: patch.phase, generation: patch.generation, decider: patch.decider,
     waiting: patch.waiting, seats: patch.seats ?? l.room.seats, updated_at: new Date().toISOString(),
@@ -163,7 +216,7 @@ async function step(req: PlayRequest, uid: string, store: Store, l: Loaded, now:
       const open = room.seats.filter((x) => x.kind === 'open').length;
       if (open) throw new HttpError(409, `Waiting for ${open} more player${open === 1 ? '' : 's'} to join`);
       const s = createGame(room.seats.map((x) => ({ name: x.name, color: x.color, cpu: x.kind === 'human' ? null : (x.kind as Level) })), { corporateEra: room.corporate_era, ...gameSettings(room) });
-      const saved = await commit(store, l, patchFor(room, s, {}, []));
+      const saved = await commit(store, l, patchFor(room, s, {}, []), uid);
       return saved ? reply(saved, s, {}, uid) : null;
     }
 
@@ -191,7 +244,7 @@ async function step(req: PlayRequest, uid: string, store: Store, l: Loaded, now:
         log.push({ seat, a });
       }
       flush(s, pending, log);
-      const saved = await commit(store, l, patchFor(room, s, pending, log));
+      const saved = await commit(store, l, patchFor(room, s, pending, log), uid);
       return saved ? reply(saved, s, pending, uid) : null;
     }
 
@@ -217,7 +270,7 @@ async function step(req: PlayRequest, uid: string, store: Store, l: Loaded, now:
         if (simultaneous(s) && s.players[nd].cpu && now() - t0 < PICK_BUDGET_MS) { d = nd; continue; }
         break;
       }
-      const saved = await commit(store, l, patchFor(room, s, pending, log));
+      const saved = await commit(store, l, patchFor(room, s, pending, log), uid);
       return saved ? reply(saved, s, pending, uid) : reply(room, l.state, l.pending, uid);
     }
 
@@ -234,7 +287,7 @@ async function step(req: PlayRequest, uid: string, store: Store, l: Loaded, now:
       const s = structuredClone(l.state);
       s.players[i].cpu = kind === 'human' ? null : kind;
       const seats = room.seats.map((x, j) => (j === i ? { ...x, kind } : x));
-      const saved = await commit(store, l, patchFor(room, s, l.pending, [], seats));
+      const saved = await commit(store, l, patchFor(room, s, l.pending, [], seats), uid);
       return saved ? reply(saved, s, l.pending, uid) : null;
     }
 

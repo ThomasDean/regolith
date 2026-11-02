@@ -34,6 +34,10 @@ export type PlayRequest =
   | { op: 'advance'; room: string; version: number }
   | { op: 'seat'; room: string; seat: number; kind: 'human' | Level };
 
+/** Asks the server for the public key a browser needs to subscribe to push (null: push isn't set up). */
+export interface PushKeyRequest { op: 'push-key' }
+export interface PushKeyReply { key: string | null }
+
 export interface PlayReply {
   room: RoomRow;
   /** your seat, or -1 when you're watching */

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useMemo, useState } from 'react';
 import type { GameState, Level } from '../engine/types';
 import { createGame } from '../engine/game';
 import { Board } from './Board';
@@ -9,6 +9,7 @@ import { Gallery } from './Gallery';
 import { startNewCloudId, useSession } from '../cloud';
 import { hostRoom, OnlinePanel, OnlineRoom } from './Online';
 import { onlineEnabled } from '../online/client';
+import { roomFromUrl, usePwa } from '../pwa';
 import { PLAYER_COLORS, PLAYER_COLOR_NAMES } from './format';
 import type { BoardId } from '../engine/board';
 import { BoardPicker, initialMA, MAPicker, maForBoard, type MAState } from './Setup';
@@ -28,7 +29,15 @@ export function App() {
   const [game, setGame] = useState<GameState | null>(null);
   const saved = useMemo(() => (game ? null : loadGame()), [game]);
   const [gallery, setGallery] = useState(() => typeof location !== 'undefined' && location.hash === '#gallery');
-  const [room, setRoom] = useState<string | null>(null);
+  // a tapped notification opens the app at /?room=ID; swallow the parameter so a reload doesn't reopen it
+  const [room, setRoom] = useState<string | null>(() => {
+    const id = typeof location !== 'undefined' ? roomFromUrl() : null;
+    if (id) history.replaceState(null, '', location.pathname);
+    return id;
+  });
+  const session = useSession();
+  const openRoom = useCallback((id: string) => { setGame(null); setRoom(id); }, []);
+  usePwa(session?.user.id, openRoom);
   if (import.meta.env.DEV && typeof location !== 'undefined' && location.hash === '#online-sim') return <Suspense fallback={null}><OnlineSim /></Suspense>;
   if (room) return <OnlineRoom key={room} id={room} onExit={() => setRoom(null)} />;
   if (gallery) return <Gallery onExit={() => { history.replaceState(null, '', location.pathname); setGallery(false); }} />;

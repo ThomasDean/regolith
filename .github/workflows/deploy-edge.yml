@@ -33,7 +33,7 @@ jobs:
       - if: env.SUPABASE_ACCESS_TOKEN != ''
         run: npm ci
       - if: env.SUPABASE_ACCESS_TOKEN != ''
-        run: npx vitest run tests/online.test.ts && npm run build:edge && node scripts/edge-smoke.mjs
+        run: npx vitest run tests/online.test.ts tests/push.test.ts && npm run build:edge && node scripts/edge-smoke.mjs && node scripts/edge-push-smoke.mjs
       - uses: supabase/setup-cli@v1
         if: env.SUPABASE_ACCESS_TOKEN != ''
         with: { version: latest }

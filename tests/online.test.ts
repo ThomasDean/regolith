@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { handle, HttpError, viewFor, type Loaded, type SavePatch, type Store } from '../src/online/referee';
+import { handle, HttpError, noticesFor, viewFor, type Loaded, type Notice, type SavePatch, type Store } from '../src/online/referee';
 import { HIDDEN, type PlayReply, type RoomRow, type SeatRow } from '../src/online/protocol';
 import { randomAction } from '../src/engine/bot';
 import { createGame } from '../src/engine/game';
@@ -11,6 +11,8 @@ function rng(seed: number) { let t = seed; return () => { t = (t + 0x6d2b79f5) |
 class MemStore implements Store {
   rooms = new Map<string, { room: RoomRow; state: GameState | null; pending: Record<string, Action>; actions: unknown[] }>();
   saves = 0;
+  notices: Notice[] = [];
+  notify(n: Notice) { this.notices.push(structuredClone(n)); }
   async load(id: string): Promise<Loaded | null> {
     const r = this.rooms.get(id);
     return r ? structuredClone({ room: r.room, state: r.state, pending: r.pending }) : null;
@@ -151,5 +153,94 @@ describe('online referee', () => {
     const before = store.saves;
     await handle({ op: 'advance', room: ID, version: r.room.version - 1 }, 'u0', store);
     expect(store.saves).toBe(before);
+  });
+});
+
+describe('push notices', () => {
+  const room = (seats: SeatRow[], over: Partial<RoomRow> = {}): RoomRow => ({
+    id: ID, code: 'ABC234', host: 'u0', status: 'playing', seats, members: seats.flatMap((x) => (x.user ? [x.user] : [])), corporate_era: true,
+    version: 3, phase: 'action', generation: 4, decider: 0, waiting: [0], updated_at: '', ...over,
+  });
+  const patch = (over: Partial<SavePatch>): SavePatch => ({
+    state: {} as GameState, pending: {}, actions: [], status: 'playing', phase: 'action', generation: 4, decider: 1, waiting: [1], seats: null, ...over,
+  });
+
+  it('tells a player when their turn comes, naming who they are playing with, but not the one who just moved', () => {
+    const r = room([human(0), human(1), cpu(2)]);
+    expect(noticesFor(r, patch({}), 'u0')).toEqual({ room: ID, users: ['u1'], title: 'Your turn', body: 'Generation 4 · with H0 and C2', tag: ID });
+    expect(noticesFor(r, patch({}), 'u1')).toBeNull(); // they moved themselves (e.g. a CPU step they asked for)
+  });
+
+  it('stays quiet while the same player keeps deciding, and when a CPU is next', () => {
+    const r = room([human(0), human(1), cpu(2)], { waiting: [1] });
+    expect(noticesFor(r, patch({ waiting: [1] }), 'u0')).toBeNull();
+    expect(noticesFor(r, patch({ waiting: [2], decider: 2 }), 'u1')).toBeNull();
+  });
+
+  it('asks everyone for their picks at once, using the phase for the title', () => {
+    const r = room([human(0), human(1), human(2)], { waiting: [1] });
+    const n = noticesFor(r, patch({ phase: 'research', waiting: [0, 1, 2], decider: 0 }), 'u1')!;
+    expect(n.users.sort()).toEqual(['u0', 'u2']); // seat 1 was already being waited on and made the move
+    expect(n.title).toBe('Choose your research cards');
+    expect(n.body).toBe('Generation 4');
+    expect(noticesFor(room([human(0), human(1)], { status: 'lobby', waiting: [] }), patch({ phase: 'setup', waiting: [0, 1] }), 'u0')!.title).toBe('Choose your corporation');
+  });
+
+  it('says the game is over to every human but the last mover, once', () => {
+    const r = room([human(0), human(1), cpu(2), human(3)]);
+    const over = patch({ status: 'over', phase: 'over', waiting: [], decider: null });
+    expect(noticesFor(r, over, 'u1')).toMatchObject({ title: 'Game over', users: ['u0', 'u3'] });
+    expect(noticesFor(room([human(0), human(1)], { status: 'over' }), over, 'u1')).toBeNull();
+  });
+
+  it('counts a seat handed back to its player as a new turn', () => {
+    const seats = [human(0), human(1)];
+    const r = room([human(0), { ...human(1), kind: 'hard' }], { waiting: [1] });
+    expect(noticesFor(r, patch({ waiting: [1], seats }), 'u0')).toMatchObject({ users: ['u1'] });
+    // handing a seat to a CPU tells nobody
+    expect(noticesFor(room(seats, { waiting: [1] }), patch({ waiting: [1], seats: [human(0), { ...human(1), kind: 'hard' }] }), 'u0')).toBeNull();
+  });
+
+  it('fires from real moves: the start, and then only ever to a human whose move it now is', async () => {
+    const store = new MemStore();
+    const seats = [human(0), cpu(1, 'normal'), human(2)];
+    makeRoom(store, seats.map((x) => ({ ...x })));
+    const r = rng(7);
+    let last = await handle({ op: 'start', room: ID }, 'u0', store);
+    expect(store.notices).toHaveLength(1);
+    expect(store.notices[0]).toMatchObject({ users: ['u2'], title: 'Choose your corporation' });
+    let seen = 1;
+    for (let step = 0; step < 30000 && last.room.status !== 'over'; step++) {
+      const d = last.room.decider!;
+      const actor = seats[d].kind === 'human' ? `u${d}` : step % 2 ? 'u0' : 'u2';
+      if (seats[d].kind !== 'human') last = await handle({ op: 'advance', room: ID, version: last.room.version }, actor, store);
+      else {
+        const v = structuredClone((await handle({ op: 'view', room: ID }, actor, store)).view!);
+        last = await handle({ op: 'act', room: ID, action: randomAction(v, r) }, actor, store);
+      }
+      for (const n of store.notices.slice(seen)) {
+        expect(n.users).not.toContain(actor);
+        for (const u of n.users) {
+          const i = Number(u.slice(1));
+          expect(seats[i].kind).toBe('human');
+          if (last.room.status === 'playing') expect(last.room.waiting).toContain(i);
+        }
+      }
+      seen = store.notices.length;
+    }
+    expect(last.room.status).toBe('over');
+    expect(store.notices.filter((n) => n.title === 'Game over')).toHaveLength(1);
+    expect(store.notices.length).toBeGreaterThan(5);
+  }, 120000);
+
+  it('never lets a failing notification get in the way of a move', async () => {
+    for (const notify of [() => { throw new Error('sync boom'); }, () => Promise.reject(new Error('async boom'))]) {
+      const store = new MemStore();
+      store.notify = notify;
+      makeRoom(store, [human(0), human(1)]);
+      const r = await handle({ op: 'start', room: ID }, 'u0', store);
+      expect(r.room.status).toBe('playing');
+      expect(store.rooms.get(ID)!.state).not.toBeNull();
+    }
   });
 });

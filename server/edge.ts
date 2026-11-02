@@ -4,10 +4,12 @@
 //
 // It checks the caller's sign-in itself (so it deploys with verify_jwt off) and reaches the
 // database through two service-role-only functions, regolith.srv_load and regolith.srv_save.
-import { handle, HttpError, type SavePatch, type Store } from '../src/online/referee';
-import type { PlayRequest } from '../src/online/protocol';
+import { handle, HttpError, type Notice, type SavePatch, type Store } from '../src/online/referee';
+import type { PlayRequest, PushKeyReply, PushKeyRequest } from '../src/online/protocol';
+import { sendPush, type Vapid } from './push';
 
 declare const Deno: { env: { get(k: string): string | undefined }; serve(h: (r: Request) => Response | Promise<Response>): void };
+declare const EdgeRuntime: { waitUntil?(p: Promise<unknown>): void } | undefined;
 
 // Prefer the new sb_secret_/sb_publishable_ keys (JSON maps by name); fall back to the legacy
 // service_role/anon JWT keys, which Supabase retires at the end of 2026.
@@ -38,7 +40,33 @@ async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
   return (await res.json()) as T;
 }
 
+// Push notifications need three function secrets (see README): VAPID_PUBLIC_KEY,
+// VAPID_PRIVATE_KEY and optionally VAPID_SUBJECT. Without them the game works as before.
+const VAPID: Vapid | null = Deno.env.get('VAPID_PUBLIC_KEY') && Deno.env.get('VAPID_PRIVATE_KEY')
+  ? { publicKey: Deno.env.get('VAPID_PUBLIC_KEY')!, privateKey: Deno.env.get('VAPID_PRIVATE_KEY')!, subject: Deno.env.get('VAPID_SUBJECT') ?? 'https://regolith-wheat.vercel.app' }
+  : null;
+
+interface Target { user: string; endpoint: string; p256dh: string; auth: string; badge: number }
+
+async function deliver(n: Notice, vapid: Vapid): Promise<void> {
+  const targets = await rpc<Target[]>('srv_push_targets', { p_users: n.users });
+  const gone: string[] = [];
+  await Promise.all(targets.map(async (t) => {
+    const msg = { title: n.title, body: n.body, tag: n.tag, url: `/?room=${n.room}`, badge: t.badge };
+    if ((await sendPush(t, msg, vapid)) === 'gone') gone.push(t.endpoint);
+  }));
+  if (gone.length) await rpc('srv_push_drop', { p_endpoints: gone });
+}
+
+/** Sends in the background so the player's move isn't held up by push services. */
+function notify(n: Notice): Promise<void> {
+  const job = deliver(n, VAPID!).catch((e) => console.error('push failed', e));
+  if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime?.waitUntil) { EdgeRuntime.waitUntil(job); return Promise.resolve(); }
+  return job;
+}
+
 const store: Store = {
+  ...(VAPID ? { notify } : {}),
   load: (room) => rpc('srv_load', { p_room: room }),
   save: (room, version, p: SavePatch) => rpc('srv_save', {
     p_room: room, p_version: version, p_state: p.state, p_pending: p.pending, p_actions: p.actions, p_status: p.status,
@@ -62,8 +90,9 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ error: 'Use POST' }, 405);
   try {
     const uid = await userId(req);
-    const body = (await req.json()) as PlayRequest;
-    return json(await handle(body, uid, store));
+    const body = (await req.json()) as PlayRequest | PushKeyRequest;
+    if (body && body.op === 'push-key') return json({ key: VAPID?.publicKey ?? null } satisfies PushKeyReply);
+    return json(await handle(body as PlayRequest, uid, store));
   } catch (e) {
     if (e instanceof HttpError) return json({ error: e.message }, e.status);
     console.error(e);
