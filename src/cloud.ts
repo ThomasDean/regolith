@@ -31,6 +31,53 @@ export function useSession(): Session | null | undefined {
 
 const here = () => `${window.location.origin}${window.location.pathname}`;
 
+/** Where to come back to after Google: this page, keeping ?join=CODE but not old auth params. */
+function returnUrl(): string {
+  const q = new URLSearchParams(window.location.search);
+  for (const k of [...q.keys()]) if (k !== 'join') q.delete(k);
+  const qs = q.toString();
+  return `${here()}${qs ? `?${qs}` : ''}`;
+}
+
+/**
+ * Sign in with Google. A guest (anonymous) session is upgraded in place with linkIdentity, so
+ * the same user keeps their saves and online games; anyone else gets an ordinary Google sign-in.
+ * Both leave the page for Google and come back to it.
+ */
+export async function signInWithGoogle(opts: { switchAccount?: boolean } = {}) {
+  const c = sb();
+  const { data } = await c.auth.getSession();
+  const guest = !!data.session?.user.is_anonymous;
+  const options = { redirectTo: returnUrl(), queryParams: { prompt: 'select_account' } };
+  if (guest && !opts.switchAccount) {
+    const { error } = await c.auth.linkIdentity({ provider: 'google', options });
+    if (error) throw new Error(error.message);
+    return;
+  }
+  const { error } = await c.auth.signInWithOAuth({ provider: 'google', options });
+  if (error) throw new Error(error.message);
+}
+
+export type AuthReturnError = 'already-linked' | 'other';
+
+/**
+ * Reads an error Supabase put on the URL after a Google round trip, then tidies the URL. The
+ * common one: that Google account already belongs to another Regolith user, so it can't be
+ * attached to this guest.
+ */
+export function takeAuthReturnError(): { kind: AuthReturnError; message: string } | null {
+  try {
+    const q = new URLSearchParams(window.location.search);
+    const h = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    const code = q.get('error_code') ?? h.get('error_code');
+    const desc = q.get('error_description') ?? h.get('error_description');
+    if (!code && !desc && !q.get('error') && !h.get('error')) return null;
+    history.replaceState(null, '', returnUrl());
+    const kind: AuthReturnError = code === 'identity_already_exists' || /already.*(linked|exists)/i.test(desc ?? '') ? 'already-linked' : 'other';
+    return { kind, message: desc ?? code ?? 'Sign-in did not complete' };
+  } catch { return null; }
+}
+
 export async function sendSignInLink(email: string) {
   const { error } = await sb().auth.signInWithOtp({ email, options: { emailRedirectTo: here(), shouldCreateUser: true } });
   if (error) throw new Error(error.message);

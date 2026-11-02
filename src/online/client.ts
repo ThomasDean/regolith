@@ -18,7 +18,7 @@ async function must<T>(p: PromiseLike<{ data: T; error: { message: string } | nu
 }
 
 function friendly(msg: string): string {
-  if (/anonymous sign-ins are disabled/i.test(msg)) return 'Guest play isn’t switched on for this site yet. Sign in with your email above instead.';
+  if (/anonymous sign-ins are disabled/i.test(msg)) return 'Guest play isn’t switched on for this site yet. Sign in with Google above instead.';
   if (/schema must be one of/i.test(msg)) return 'Online play isn’t set up on the server yet.';
   if (/function .* does not exist|Could not find the function/i.test(msg)) return 'Online play isn’t set up on the server yet.';
   return msg;
