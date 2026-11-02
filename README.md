@@ -1,6 +1,6 @@
 # Regolith
 
-An implementation of the Terraforming Mars base game plus Corporate Era for 2–5 players, on seven maps, with CPU opponents at three difficulty levels. Play pass-and-play at one device, or online with friends on their own devices. Mix humans and CPUs freely.
+An implementation of the Terraforming Mars base game plus Corporate Era for 2–5 players, with the Prelude, Venus Next, Colonies and Turmoil expansions, on seven maps, with CPU opponents at three difficulty levels. Play pass-and-play at one device, or online with friends on their own devices. Mix humans and CPUs freely.
 
 Hotseat play runs entirely in the browser as a static site, so it deploys to Netlify or Vercel with no server. Online play adds a small Supabase backend (below).
 
@@ -75,7 +75,7 @@ The menu's **Host online** button opens a game from the player list: the first s
 
 ### Setting it up (once)
 
-1. **Database:** run `supabase/migrations/20261019000000_regolith_online_rooms.sql` and then `20261101000000_regolith_room_settings.sql` (map and milestone/award choice) on the Breakthrough Music dev project (SQL editor, or ask Claude to apply it). It adds `regolith.rooms` (members can read their own rooms; realtime is on) and `regolith.room_states` (server only), plus the lobby functions.
+1. **Database:** run `supabase/migrations/20261019000000_regolith_online_rooms.sql`, then `20261101000000_regolith_room_settings.sql` (map and milestone/award choice) and `20261102120000_regolith_room_expansions.sql` (expansions) on the Breakthrough Music dev project (SQL editor, or ask Claude to apply it). It adds `regolith.rooms` (members can read their own rooms; realtime is on) and `regolith.room_states` (server only), plus the lobby functions.
 2. **Edge Function:** either add a `SUPABASE_ACCESS_TOKEN` repository secret (supabase.com → Account → Access Tokens) so `.github/workflows/deploy-edge.yml` deploys on every engine change, or run `npx supabase login` then `npm run deploy:edge` locally. It deploys with JWT verification off because it checks the caller's sign-in itself.
 3. **Guests:** Authentication → Sign In / Providers → turn on **Allow anonymous sign-ins**. Without it, everyone has to sign in with Google first.
 
@@ -128,6 +128,23 @@ Shuffles keep look-alikes apart. Each milestone and award describes what it rewa
 
 CPUs value whatever is in play: tag races for any tag milestone or award, the forecast model for every award (spreads fitted per award with `scripts/award-drift-boards.ts`), and the map's bonuses, costs and track lengths. `npx tsx scripts/boards.ts normal,normal,normal 3 [1]` plays CPU games on every map (the `1` uses drawn sets).
 
+## Expansions
+
+Tick any mix of the four in setup (the menu remembers your choice; online, the host picks them in the lobby). Each adds its cards and corporations to the deck and its own rules:
+
+| Expansion | Cards | What it adds |
+|---|---|---|
+| **Prelude** | 35 preludes, 7 projects, 5 corporations | Four preludes dealt with your corporation; keep two. Everyone plays both, in turn order, before the first action. A prelude that can't be played in full is swapped for 15 M€. Wild tags count as any one tag for requirements. |
+| **Venus Next** | 49 projects, 5 corporations | The Venus track (0–30 %, 2 % a step, TR per step, a card at 8 %, a TR at 16 %; not needed to end the game). Floaters, the Air Scrapping project (15 M€), four city spaces off Mars, and World Government Terraforming: after production the first player raises one unfinished parameter a step, with no TR or bonuses. Hoverlord milestone and Venuphile award join the pool. |
+| **Colonies** | 49 projects, 5 corporations | Colony tiles (players + 2; 5 with two players) with build bonuses, trade tracks and colony bonuses. Microbe, animal and floater tiles open once a card holding that resource is played. One trade fleet each (more from cards); trading costs 9 M€, 3 energy or 3 titanium, pays the track, gives every colony owner their bonus, and drops the marker to the colony count. Fleets come home and tracks rise each generation. Build Colony project (17 M€). Pioneer milestone; Constructor counts colonies. |
+| **Turmoil** | 17 projects, 5 corporations | Six parties, 7 delegates each (first one each generation free, then 5 M€), party leaders, the dominant party and the chairman. After production (and World Government, and colony tracks): everyone loses 1 TR, the current global event resolves with each player's influence, the dominant party takes power, its leader becomes chairman (+1 TR), its ruling bonus pays out and its policy holds for a generation (Reds tax TR raised in actions at 3 M€ a step; Scientists and Kelvinists offer an action). 36 global events, those for Venus or Colonies only with them. Amazonis Planitia's delegate bonuses apply; Lobbyist milestone. |
+
+Card numbers follow the published game; card text is Regolith's own wording. Milestones that need a missing expansion (Pioneer on Utopia Planitia, Planetologist on Terra Cimmeria, Lobbyist on Amazonis Planitia) are filled by a balanced draw, as before.
+
+The rules live in `src/engine/game.ts` (prelude phase, the steps after production, the new ops), `src/engine/colonies.ts` and `src/engine/turmoil.ts` (tiles, parties and events), and the card lists in `src/engine/cards-prelude.ts`, `cards-venus.ts`, `cards-colonies.ts` and `cards-turmoil.ts`. CPUs value Venus steps, card resources that convert (floaters to Venus or TR, microbes to M€…), colonies by their bonuses and expected trades, trade fleets by the trades still to come, and delegates by the chairman's TR and influence; choices like which tile, which party or what World Government raises are simulated move by move. A leading CPU prefers World Government raises that end the game sooner, a trailing one prefers Venus.
+
+`tests/expansions.test.ts` covers each expansion's rules; `tests/coverage.test.ts` also plays 60 random games with all four on; `npx tsx scripts/fuzz-expansions.ts 8` plays random games over all 15 combinations of expansions and maps, checking resources, oceans and delegate counts; `npx tsx scripts/expansions.ts hard,normal,easy 12 [prelude,venus,colonies,turmoil] [map]` plays CPU games.
+
 ## End-of-game analytics
 
 The final screen adds:
@@ -145,7 +162,12 @@ src/engine/       Pure TypeScript rules engine (no DOM, no network)
   types.ts        Game state, actions, effect ops, prompts
   board.ts        The seven maps: layouts, bonuses, special spaces, track lengths and bonuses
   ma.ts           Milestones and awards: catalogue, metrics, conflict scores, balanced draws
-  cards.ts        All 208 project cards and 12 corporations as data + effect functions
+  cards.ts        All 208 base/Corporate Era project cards and 12 corporations as data + effect functions;
+                  the card index over every set (cardInGame decides which are in a game)
+  cards-*.ts      Prelude, Venus Next, Colonies and Turmoil cards and corporations
+  colonies.ts     Colony tiles, trade costs and tracks
+  turmoil.ts      Parties, ruling bonuses and policies, global events, delegates and influence
+  ops.ts          Shorthands for building card effects
   game.ts         createGame + applyAction: every rule is enforced here
   queries.ts      Requirements, costs, payment, legal placements, milestones, awards, scoring
   moves.ts        Legal-move enumeration
@@ -153,7 +175,8 @@ src/engine/       Pure TypeScript rules engine (no DOM, no network)
   ai/value.ts     Engine-aware valuation (production, TR, VP, tags, discounts, triggers)
   ai/cpu.ts       CPU players: simulate each move, evaluate the result, pick the best
 src/ui/           React UI: SVG map, gauges, player boards, hand, dialogs, cloud-save panel
-  Setup.tsx       Map picker and milestone/award slots (menu and online lobby)
+  Setup.tsx       Expansion toggles, map picker and milestone/award slots (menu and online lobby)
+  Expansions.tsx  Colonies panel (tracks, colonies, fleets, trading) and Turmoil panel (parties, government, events)
   Analytics.tsx   End-of-game charts and stats
   CardArt.tsx     Generated illustration for every card (scene from its subject, seeded variation)
   Icons.tsx       Tag and resource glyphs

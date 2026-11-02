@@ -1,6 +1,6 @@
 import type { GameState } from '../engine/types';
 import { MIN_TEMP } from '../engine/types';
-import { maxOceans, maxOxy, maxTemp, params, type TrackBonus } from '../engine/board';
+import { maxOceans, maxOxy, maxTemp, params, MAX_VENUS, type TrackBonus } from '../engine/board';
 import { fmtTemp } from './format';
 import { Num } from './Fx';
 
@@ -48,6 +48,19 @@ export function Gauges({ s }: { s: GameState }) {
         </div>
         <div className="gauge-name">Oceans</div>
       </div>
+      {s.venus !== undefined && (
+        <div className={`gauge ${s.venus >= MAX_VENUS ? 'full' : ''}`}>
+          <div className="gauge-read"><Num value={s.venus} />%</div>
+          <div className="tube venus" role="meter" aria-valuemin={0} aria-valuemax={MAX_VENUS} aria-valuenow={s.venus} aria-label="Venus" style={{ ['--f' as string]: s.venus / MAX_VENUS }}>
+            <div className="tube-fill" />
+            {Array.from({ length: MAX_VENUS / 2 - 1 }, (_, i) => <span key={i} className="tube-tick" style={{ ['--p' as string]: (i + 1) / (MAX_VENUS / 2) }} />)}
+            {[{ at: 8, text: 'draw a card' }, { at: 16, text: '+1 TR' }].map((b) => (
+              <span key={b.at} className={`tube-bonus ${s.venus! >= b.at ? 'got' : ''}`} style={{ ['--p' as string]: b.at / MAX_VENUS }} title={`${b.at}%: ${b.text}`} />
+            ))}
+          </div>
+          <div className="gauge-name" title="Venus isn’t needed to end the game">Venus</div>
+        </div>
+      )}
     </div>
   );
 }

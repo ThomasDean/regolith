@@ -51,7 +51,11 @@ function expectPrivate(r: PlayReply) {
     expect(p.hand.every((c) => c === HIDDEN)).toBe(true);
     if (p.research) expect(p.research.every((c) => c === HIDDEN)).toBe(true);
     if (p.setup) expect(p.setup.cards.every((c) => c === HIDDEN)).toBe(true);
+    if (p.setup?.preludes) expect(p.setup.preludes.every((c) => c === HIDDEN)).toBe(true);
+    if (p.preludes) expect(p.preludes.every((c) => c === HIDDEN)).toBe(true);
   }
+  if (v.preludeDeck) expect(v.preludeDeck.every((c) => c === HIDDEN)).toBe(true);
+  if (v.turmoil) expect(v.turmoil.deck.every((c) => c === HIDDEN)).toBe(true);
 }
 
 describe('online referee', () => {
@@ -101,14 +105,28 @@ describe('online referee', () => {
     await expect(handle({ op: 'act', room: ID, action: { t: 'pass' } }, `u${other}`, store)).rejects.toThrow(/not your turn/);
   });
 
-  for (const [g, seats] of [
-    [0, [human(0), cpu(1, 'normal'), human(2)]],
-    [1, [human(0), human(1)]],
-    [2, [cpu(0, 'hard'), human(1), cpu(2), human(3)]],
+  it('starts with the room’s expansions', async () => {
+    const store = new MemStore();
+    makeRoom(store, [human(0), cpu(1)]);
+    store.rooms.get(ID)!.room.settings = { board: 'tharsis', expansions: { prelude: true, venus: true, colonies: true, turmoil: true } };
+    const r = await handle({ op: 'start', room: ID }, 'u0', store);
+    expect(r.view!.options.expansions).toEqual({ prelude: true, venus: true, colonies: true, turmoil: true });
+    expect(r.view!.venus).toBe(0);
+    expect(r.view!.colonies!.length).toBe(5);
+    expect(r.view!.players[0].setup!.preludes).toHaveLength(4);
+    expect(r.view!.players[1].setup!.preludes!.every((c) => c === HIDDEN)).toBe(true);
+  });
+
+  for (const [g, seats, expansions] of [
+    [0, [human(0), cpu(1, 'normal'), human(2)], undefined],
+    [1, [human(0), human(1)], undefined],
+    [2, [cpu(0, 'hard'), human(1), cpu(2), human(3)], undefined],
+    [3, [human(0), cpu(1, 'normal'), human(2)], { prelude: true, venus: true, colonies: true, turmoil: true }],
   ] as const) {
-    it(`plays a whole online game ${g} from redacted views`, async () => {
+    it(`plays a whole online game ${g} from redacted views${expansions ? ' with all expansions' : ''}`, async () => {
       const store = new MemStore();
       makeRoom(store, seats.map((x) => ({ ...x })));
+      if (expansions) store.rooms.get(ID)!.room.settings = { expansions: { ...expansions } };
       const r = rng(100 + g);
       let last = await handle({ op: 'start', room: ID }, seats.find((x) => x.user)!.user!, store);
       const humans = seats.flatMap((x, i) => (x.user ? [i] : []));

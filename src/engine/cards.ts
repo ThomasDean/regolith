@@ -1,19 +1,40 @@
 // Card catalogue: base game + Corporate Era. Numbers (costs, tags, requirements, VP) follow the
 // published game; effect wording is our own. Effects are returned as Op lists evaluated at play
 // time, so "per tag" / "per city" amounts are computed against the state when the card resolves.
-import type { CardRes, CardType, GameState, Op, Res, Space, Tag } from './types';
+import type { CardRes, CardType, GameState, Op, PartyId, Res, Space, Tag } from './types';
 import { adjacentCount, cardSpace, cities, eventsPlayed, others, P, tagCount } from './helpers';
 import { maxOceans } from './board';
+import { PRELUDE_CORPS, PRELUDES, PRELUDE_PROJECTS } from './cards-prelude';
+import { VENUS_CORPS, VENUS_PROJECTS } from './cards-venus';
+import { COLONY_CORPS, COLONY_PROJECTS } from './cards-colonies';
+import { TURMOIL_CORPS, TURMOIL_PROJECTS } from './cards-turmoil';
 
 export interface Req {
   temp?: number; tempMax?: number;
   oxy?: number; oxyMax?: number;
   oceans?: number; oceansMax?: number;
+  venus?: number; venusMax?: number;
   tags?: Partial<Record<Tag, number>>;
   prod?: Partial<Record<Res, number>>;
   greeneries?: number;
   citiesAll?: number;
+  /** your own city tiles */
+  cities?: number;
+  /** floaters on your cards */
+  floaters?: number;
+  /** your TR */
+  tr?: number;
+  /** your colonies */
+  colonies?: number; coloniesMax?: number;
+  /** Turmoil: the party rules, or you have 2 delegates there */
+  party?: PartyId;
+  chairman?: boolean;
+  /** party leaders of yours */
+  leaders?: number;
 }
+
+/** Which box a card comes from. */
+export type CardSet = 'base' | 'corp' | 'prelude' | 'venus' | 'colonies' | 'turmoil';
 
 export interface CardAction {
   text: string;
@@ -31,7 +52,7 @@ export interface CardDef {
   cost: number;
   tags: Tag[];
   text: string;
-  set: 'base' | 'corp';
+  set: CardSet;
   req?: Req;
   vp?: number | ((s: GameState, pid: number, id: string) => number);
   vpText?: string;
@@ -47,6 +68,15 @@ export interface CardDef {
   onTile?: (s: GameState, owner: number, placer: number, sp: Space) => Op[];
   onSP?: (s: GameState, owner: number, cost: number) => Op[];
   protectedRes?: boolean;
+  /** resources here may pay for cards with this tag (Dirigibles, Psychrophiles) */
+  payWith?: { rtype: CardRes; value: number; tag: Tag };
+  /** Colonies: trade discount / track boost */
+  tradeDiscount?: number;
+  tradeOffset?: number;
+  /** Turmoil: extra influence */
+  influence?: number;
+  /** runs for its owner in the production phase (Pristar) */
+  onProduction?: (s: GameState, owner: number) => Op[];
   // corporations
   startMC?: number;
   firstAction?: { text: string; ops: Op[] };
@@ -616,17 +646,36 @@ addCE({
 export const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
 export const CARDS: Record<string, CardDef> = {};
-for (const [group, set] of [[corpBase, 'base'], [corpCE, 'corp'], [list, 'base'], [corpEra, 'corp']] as const) {
+const GROUPS: [Omit<CardDef, 'id' | 'set'>[], CardSet][] = [
+  [corpBase, 'base'], [corpCE, 'corp'], [list, 'base'], [corpEra, 'corp'],
+  [PRELUDE_CORPS, 'prelude'], [PRELUDES, 'prelude'], [PRELUDE_PROJECTS, 'prelude'],
+  [VENUS_CORPS, 'venus'], [VENUS_PROJECTS, 'venus'],
+  [COLONY_CORPS, 'colonies'], [COLONY_PROJECTS, 'colonies'],
+  [TURMOIL_CORPS, 'turmoil'], [TURMOIL_PROJECTS, 'turmoil'],
+];
+for (const [group, set] of GROUPS) {
   for (const c of group) {
     const id = slug(c.name);
+    if (CARDS[id]) throw new Error(`Duplicate card id ${id}`);
     CARDS[id] = { ...c, id, set };
   }
 }
-export const PROJECT_IDS = Object.values(CARDS).filter((c) => c.type !== 'corp').map((c) => c.id);
+/** Project cards (the deck): everything but corporations and preludes. */
+export const PROJECT_IDS = Object.values(CARDS).filter((c) => c.type !== 'corp' && c.type !== 'prelude').map((c) => c.id);
 export const CORP_IDS = Object.values(CARDS).filter((c) => c.type === 'corp' && c.id !== 'beginner-corporation').map((c) => c.id);
+export const PRELUDE_IDS = Object.values(CARDS).filter((c) => c.type === 'prelude').map((c) => c.id);
+
+/** Whether a card's box is in this game. */
+export function cardInGame(s: Pick<GameState, 'options'>, id: string): boolean {
+  const set = CARDS[id].set;
+  const ex = s.options.expansions ?? {};
+  if (set === 'base') return true;
+  if (set === 'corp') return s.options.corporateEra;
+  return !!ex[set];
+}
 
 /** Whether `pid` shields its plants/animals/microbes from other players. */
-export function protects(s: GameState, pid: number, r: 'plants' | 'animal' | 'microbe'): boolean {
+export function protects(s: GameState, pid: number, r: 'plants' | 'animal' | 'microbe' | CardRes): boolean {
   return P(s, pid).played.includes('protected-habitats') && (r === 'plants' || r === 'animal' || r === 'microbe');
 }
 

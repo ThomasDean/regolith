@@ -3,14 +3,17 @@
 // worth a lot early, victory points dominate late.
 import type { CardRes, GameState, Op, Res, Tag } from '../types';
 import { TAGS } from '../types';
-import { CARDS, PROJECT_IDS, type CardDef } from '../cards';
-import { P, cities, greeneries, tagCount } from '../helpers';
-import { maxOceans, maxOxy, maxTemp, neighbours, params, totalSteps } from '../board';
+import { CARDS, PROJECT_IDS, cardInGame, type CardDef } from '../cards';
+import { P, cities, greeneries, resCards, tagCount } from '../helpers';
+import { maxOceans, maxOxy, maxTemp, neighbours, params, totalSteps, MAX_VENUS } from '../board';
 import { gameAwards, gameMilestones, inGame, tagRace, awardDef } from '../ma';
 import {
-  activeCards, awardCost, cardCost, greeneryCost, payLimitsForCard, requirementGap,
-  requirementsMet, score, spaceCostApplies, stepsLeft, steelValue, titaniumValue,
+  activeCards, awardCost, buyCost, canPlayCard, cardCost, greeneryCost, payLimitsForCard, requirementGap,
+  requirementsMet, score, spaceCostApplies, stepsLeft, steelValue, titaniumValue, venusOf,
 } from '../queries';
+import { buildableTiles, colonyDef, coloniesInPlay, fleetsFree, tradeCost, tradeTargets, tradeTrack } from '../colonies';
+import { T, influence, PARTY_DEFS } from '../turmoil';
+import { PARTIES } from '../types';
 
 export interface Weights {
   lambda: number; // how much opponents' gains count against ours
@@ -106,26 +109,38 @@ export function makeCtx(s: GameState, pid: number, w: Weights, clock: Clock = cl
   return { s, pid, G, last, vp: 5 + 5 * (1 - Math.min(G, 10) / 10), w };
 }
 
-// ---------------- static pool statistics ----------------
-const TAG_FREQ: Record<Tag, number> = Object.fromEntries(TAGS.map((t) => [t, 0])) as Record<Tag, number>;
-const EVENT_FREQ = { all: 0, space: 0 };
-{
-  for (const id of PROJECT_IDS) {
-    const c = CARDS[id];
-    for (const t of new Set(c.tags)) TAG_FREQ[t] += 1 / PROJECT_IDS.length;
-    if (c.type === 'event') {
-      EVENT_FREQ.all += 1 / PROJECT_IDS.length;
-      if (c.tags.includes('space')) EVENT_FREQ.space += 1 / PROJECT_IDS.length;
+// ---------------- pool statistics ----------------
+// How often each tag (and events) turns up among the project cards in this game's deck.
+interface PoolStats { tag: Record<Tag, number>; events: { all: number; space: number } }
+const POOL = new Map<string, PoolStats>();
+function poolStats(s: GameState): PoolStats {
+  const key = `${s.options.corporateEra ? 1 : 0}${(['prelude', 'venus', 'colonies', 'turmoil'] as const).map((e) => (s.options.expansions?.[e] ? 1 : 0)).join('')}`;
+  let st = POOL.get(key);
+  if (!st) {
+    const ids = PROJECT_IDS.filter((id) => cardInGame(s, id));
+    const tag = Object.fromEntries(TAGS.map((t) => [t, 0])) as Record<Tag, number>;
+    const events = { all: 0, space: 0 };
+    for (const id of ids) {
+      const c = CARDS[id];
+      for (const t of new Set(c.tags)) tag[t] += 1 / ids.length;
+      if (c.type === 'event') {
+        events.all += 1 / ids.length;
+        if (c.tags.includes('space')) events.space += 1 / ids.length;
+      }
     }
+    st = { tag, events };
+    POOL.set(key, st);
   }
+  return st;
 }
 /** Cards this player is likely to play for the rest of the game (excluding the hand). */
 const futurePlays = (c: Ctx) => Math.max(0, (c.G - 1) * 2.5 + 1);
 const handWithTag = (c: Ctx, t: Tag) => P(c.s, c.pid).hand.filter((id) => CARDS[id].tags.includes(t)).length;
-const expectedTagPlays = (c: Ctx, t: Tag) => handWithTag(c, t) * 0.7 + futurePlays(c) * TAG_FREQ[t];
+const expectedTagPlays = (c: Ctx, t: Tag) => handWithTag(c, t) * 0.7 + futurePlays(c) * poolStats(c.s).tag[t];
 
 // ---------------- unit values ----------------
 const tempLeft = (s: GameState) => Math.max(0, (maxTemp(s) - s.temperature) / 2);
+const venusLeft = (s: GameState) => (s.venus === undefined ? 0 : Math.max(0, (MAX_VENUS - s.venus) / 2));
 const oxyLeft = (s: GameState) => Math.max(0, maxOxy(s) - s.oxygen);
 const oceansLeft = (s: GameState) => Math.max(0, maxOceans(s) - s.oceans);
 
@@ -140,9 +155,10 @@ export const cardDrawValue = (c: Ctx) => {
   return c.drawv;
 };
 
-function raiseValue(c: Ctx, param: 'temp' | 'oxy' | 'ocean'): number {
+function raiseValue(c: Ctx, param: 'temp' | 'oxy' | 'ocean' | 'venus'): number {
   let v = trValue(c) * sty(c).tr;
-  if (c.w.tempo) {
+  // Venus doesn't bring the end closer
+  if (c.w.tempo && param !== 'venus') {
     // ahead: closing the game out is worth more; behind: every raise hastens a loss
     const lead = leadMargin(c);
     v += Math.max(-3, Math.min(3, lead * 0.25));
@@ -264,10 +280,36 @@ export function prodValue(c: Ctx, r: Res): number {
 const RES_PER_VP: Record<string, number> = {
   ants: 2, birds: 1, decomposers: 3, 'ecological-zone': 2, fish: 1, herbivores: 2, livestock: 1, pets: 2, predators: 1,
   'small-animals': 2, tardigrades: 4, 'security-fleet': 1, 'physics-complex': 0.5,
+  celestic: 3, 'floating-habs': 2, stratopolis: 3, extremophiles: 3, 'venusian-insects': 2, 'venusian-animals': 1, 'stratospheric-birds': 1,
+  arklight: 2, 'jovian-lanterns': 2, 'sub-zero-salt-fish': 2, 'refugee-camps': 1, pristar: 1,
+};
+/** Card resources that convert: how many per use, and what the use gives. */
+const CONVERT: Record<string, { per: number; to: (c: Ctx) => number }> = {
+  'extractor-balloons': { per: 2, to: (c) => (venusLeft(c.s) ? raiseValue(c, 'venus') : 0) },
+  'forced-precipitation': { per: 2, to: (c) => (venusLeft(c.s) ? raiseValue(c, 'venus') : 0) },
+  'jet-stream-microscrappers': { per: 2, to: (c) => (venusLeft(c.s) ? raiseValue(c, 'venus') : 0) },
+  thermophiles: { per: 2, to: (c) => (venusLeft(c.s) ? raiseValue(c, 'venus') : 0) },
+  'rotator-impacts': { per: 1, to: (c) => (venusLeft(c.s) ? raiseValue(c, 'venus') : 0) },
+  'deuterium-export': { per: 1, to: (c) => prodValue(c, 'energy') },
+  'local-shading': { per: 1, to: (c) => prodValue(c, 'mc') },
+  'aerial-mappers': { per: 1, to: (c) => cardDrawValue(c) },
+  'red-spot-observatory': { per: 1, to: (c) => cardDrawValue(c) },
+  'titan-air-scrapping': { per: 2, to: (c) => trValue(c) },
+  'atmo-collectors': { per: 1, to: (c) => Math.max(2 * resValue(c, 'titanium'), 3 * resValue(c, 'energy'), 4 * resValue(c, 'heat')) },
+  'titan-shuttles': { per: 1, to: (c) => resValue(c, 'titanium') },
+  'titan-floating-launch-pad': { per: 1, to: (c) => 5 * resValue(c, 'mc') },
+  'jupiter-floating-station': { per: 1, to: (c) => resValue(c, 'mc') },
+  'sulphur-eating-bacteria': { per: 1, to: (c) => 3 * resValue(c, 'mc') },
+  dirigibles: { per: 1, to: (c) => (P(c.s, c.pid).hand.some((h) => CARDS[h].tags.includes('venus')) || !c.last ? 3 * resValue(c, 'mc') * 0.9 : 0) },
+  psychrophiles: { per: 1, to: (c) => (P(c.s, c.pid).hand.some((h) => CARDS[h].tags.includes('plant')) || !c.last ? 2 * resValue(c, 'mc') * 0.9 : 0) },
+  'stormcraft-incorporated': { per: 1, to: (c) => 2 * resValue(c, 'heat') },
+  'martian-zoo': { per: 1, to: (c) => Math.max(0, c.G - 1) * resValue(c, 'mc') },
 };
 export function resUnitValue(c: Ctx, id: string): number {
   const per = RES_PER_VP[id];
   let v = per ? c.vp / per : 0;
+  const cv = CONVERT[id];
+  if (cv) v = Math.max(v, cv.to(c) / cv.per);
   if (id === 'nitrite-reducing-bacteria') v = Math.max(v, trValue(c) / 3);
   if (id === 'ghg-producing-bacteria' && tempLeft(c.s) > 0) v = Math.max(v, raiseValue(c, 'temp') / 2);
   if (id === 'regolith-eaters' && oxyLeft(c.s) > 0) v = Math.max(v, raiseValue(c, 'oxy') / 2);
@@ -414,7 +456,132 @@ export function opValue(c: Ctx, op: Op, src?: string): number {
     case 'robotic': return 0; // valued in cardValue
     case 'searchLife': return 0.11 * resUnitValue(c, op.card) - 1;
     case 'log': return 0;
+    case 'venus': {
+      if (op.wgt) return 0;
+      const n = Math.min(op.n, venusLeft(s));
+      let v = n * raiseValue(c, 'venus');
+      const at = venusOf(s);
+      for (let i = 1; i <= n; i++) {
+        if (at + 2 * i === 8) v += cardDrawValue(c);
+        if (at + 2 * i === 16) v += trValue(c);
+      }
+      if (P(s, c.pid).corp === 'aphrodite') v += 2 * op.n * resValue(c, 'mc');
+      return v;
+    }
+    case 'lowerTemp': case 'wgt': case 'removeOcean': return 0;
+    case 'spendRes': {
+      const units = resCards(s, c.pid, op.rtype).filter((id) => (P(s, c.pid).cardRes[id] ?? 0) >= op.n).map((id) => resUnitValue(c, id));
+      return units.length ? -op.n * Math.min(...units) : 0;
+    }
+    case 'drawMatching': return op.n * cardDrawValue(c) * 1.15;
+    case 'discard': return -Math.min(op.n, P(s, c.pid).hand.length) * Math.min(1, cardDrawValue(c) * 0.4);
+    case 'othersDraw': return -c.w.lambda * op.n * cardDrawValue(c) * (s.players.length - 1) * 0.5;
+    case 'playFromHand': {
+      let best = 0;
+      for (const h of P(s, c.pid).hand) {
+        if (!canPlayCard(s, c.pid, h, { discount: op.discount, ignoreReq: op.ignoreReq })) continue;
+        best = Math.max(best, cardCoreValue(c, h) - Math.max(0, cardEffectiveCost(c, h) - op.discount * resValue(c, 'mc')));
+      }
+      return best;
+    }
+    case 'preludeDraw': return 13 * resValue(c, 'mc');
+    case 'freeAward': return 2.5 * c.vp;
+    case 'viron': return 4 * resValue(c, 'mc');
+    case 'lowestProd': {
+      const p = P(s, c.pid);
+      const min = Math.min(...(['mc', 'steel', 'titanium', 'plants', 'energy', 'heat'] as Res[]).map((r) => p.prod[r]));
+      return Math.max(...(['mc', 'steel', 'titanium', 'plants', 'energy', 'heat'] as Res[]).filter((r) => p.prod[r] === min).map((r) => prodValue(c, r)));
+    }
+    case 'pay': return -op.n * resValue(c, 'mc') * (op.titanium ? 0.85 : 1);
+    case 'colony': {
+      const tiles = buildableTiles(s, c.pid, op.dup);
+      return tiles.length ? Math.max(...tiles.map((t) => colonyValue(c, t.id))) : 0;
+    }
+    case 'fleet': return fleetValue(c) + 0.5 * tradeNet(c);
+    case 'trade': return Math.max(0, ...tradeTargets(s).map((t) => tradeGain(c, t.id)));
+    case 'addColonyTile': return 1.5;
+    case 'marketManip': return 1.5;
+    case 'colonyBonuses': {
+      let v = 0;
+      for (const t of coloniesInPlay(s)) for (const o of t.colonies) if (o === c.pid) v += colonyDef(t.id).bonus.reduce((a, x) => a + opValue(c, x), 0);
+      return v;
+    }
+    case 'delegate': return (op.one ? op.n : op.n) * delegateValue(c);
+    case 'removeDelegate': return 1;
+    case 'recruit': return 2;
+    case 'noConfidence': return 0.5 * trValue(c);
   }
+}
+
+// ---------------- Colonies ----------------
+/** Trades each colony tile is likely to see per generation (rough). */
+const tradesPerTile = (s: GameState) => {
+  const fleets = s.players.reduce((a, p) => a + (p.fleets ?? 0), 0);
+  const tiles = Math.max(1, coloniesInPlay(s).filter((t) => t.active).length);
+  return Math.min(1, fleets * 0.6 / tiles);
+};
+/** A colony: the build bonus now, plus its colony bonus whenever anyone trades there. */
+export function colonyValue(c: Ctx, id: string): number {
+  const d = colonyDef(id);
+  const now = d.build.reduce((a, x) => a + opValue(c, x), 0);
+  const bonus = d.bonus.reduce((a, x) => a + opValue(c, x), 0);
+  return now + bonus * tradesPerTile(c.s) * Math.max(0, c.G - 1) + (c.last ? 0 : 1);
+}
+/** What one trade with a tile is worth now, before its cost. */
+export function tradeGain(c: Ctx, id: string): number {
+  const t = coloniesInPlay(c.s).find((x) => x.id === id)!;
+  const d = colonyDef(id);
+  let v = d.trade(tradeTrack(c.s, c.pid, t)).reduce((a, x) => a + opValue(c, x), 0);
+  for (const o of t.colonies) {
+    const b = d.bonus.reduce((a, x) => a + opValue(o === c.pid ? c : { ...c, pid: o }, x), 0);
+    v += o === c.pid ? b : -c.w.lambda * b;
+  }
+  return v;
+}
+/** Net worth of one trade at today's tracks and prices. */
+export function tradeNet(c: Ctx): number {
+  if (!c.s.colonies) return 0;
+  const cost = Math.min(tradeCost(c.s, c.pid, 'mc') * resValue(c, 'mc'), tradeCost(c.s, c.pid, 'energy') * Math.max(0.6, resValue(c, 'energy')), tradeCost(c.s, c.pid, 'titanium') * resValue(c, 'titanium'));
+  const best = Math.max(0, ...coloniesInPlay(c.s).filter((t) => t.active).map((t) => tradeGain(c, t.id)));
+  return Math.max(0, best - cost);
+}
+/** A trade fleet: about one good trade in each generation still to come (this one is counted separately). */
+export function fleetValue(c: Ctx): number {
+  if (c.last || !c.s.colonies) return 0;
+  return tradeNet(c) * 0.6 * Math.max(0, c.G - 1);
+}
+
+// ---------------- Turmoil ----------------
+/** A delegate's worth: a shot at the chairman's TR, influence for events, party requirements. */
+export function delegateValue(c: Ctx): number {
+  if (!c.s.turmoil || c.last) return 0;
+  return 0.25 * trValue(c) + 1.5 * resValue(c, 'mc');
+}
+/** Standing in the parties: likely chairmanship, influence, and party leaders (Political Alliance…). */
+export function turmoilTerm(c: Ctx): number {
+  const s = c.s;
+  if (!s.turmoil || c.last) return 0;
+  const t = T(s);
+  let v = 0;
+  const max = Math.max(...PARTIES.map((p) => t.parties[p].delegates.length));
+  for (const party of PARTIES) {
+    const ps = t.parties[party];
+    if (ps.leader !== c.pid) continue;
+    // leading the party that will rule: the chairman's TR, the ruling bonus is shared
+    const share = party === t.dominant ? 0.85 : max ? 0.3 * ps.delegates.length / max : 0;
+    v += share * trValue(c);
+  }
+  v += influence(s, c.pid) * 2 * resValue(c, 'mc');
+  // delegates in a party our hand needs (2 there unlock its cards)
+  for (const h of P(s, c.pid).hand) {
+    const need = CARDS[h].req?.party;
+    if (need && t.ruling !== need && t.parties[need].delegates.filter((d) => d === c.pid).length >= 2) v += 1.5;
+  }
+  // the coming ruling party's bonus
+  const bonus = PARTY_DEFS[t.dominant].bonus(s, c.pid).reduce((a, x) => a + opValue(c, x), 0);
+  v += bonus * 0.5;
+  void buyCost;
+  return v;
 }
 
 function mayorValue(c: Ctx): number {
@@ -453,9 +620,9 @@ export function passiveValue(c: Ctx, id: string): number {
     case 'viral-enhancers': v += bio(['plant', 'animal', 'microbe']) * resValue(c, 'plants') * 1.2; break;
     case 'mars-university': v += expectedTagPlays(c, 'science') * 1.2; break;
     case 'olympus-conference': v += expectedTagPlays(c, 'science') * cardDrawValue(c) * 0.5; break;
-    case 'media-group': v += (futurePlays(c) * EVENT_FREQ.all + handEvents(c)) * 3; break;
-    case 'interplanetary-cinematics': v += (futurePlays(c) * EVENT_FREQ.all + handEvents(c)) * 2; break;
-    case 'optimal-aerobraking': v += (futurePlays(c) * EVENT_FREQ.space + handEvents(c, 'space')) * (3 + 3 * resValue(c, 'heat')); break;
+    case 'media-group': v += (futurePlays(c) * poolStats(s).events.all + handEvents(c)) * 3; break;
+    case 'interplanetary-cinematics': v += (futurePlays(c) * poolStats(s).events.all + handEvents(c)) * 2; break;
+    case 'optimal-aerobraking': v += (futurePlays(c) * poolStats(s).events.space + handEvents(c, 'space')) * (3 + 3 * resValue(c, 'heat')); break;
     case 'credicor': v += (futurePlays(c) * 0.22 + c.G * 0.4) * 4; break;
     case 'standard-technology': v += c.G * 0.6 * 3; break;
     case 'saturn-systems': v += expectedTagPlays(c, 'jovian') * s.players.length * prodValue(c, 'mc') * 0.5; break;
@@ -472,6 +639,24 @@ export function passiveValue(c: Ctx, id: string): number {
     case 'helion': v += Math.max(0, (p.prod.heat * c.G + p.res.heat) * (resValue(c, 'mc') - resValue(c, 'heat') * 0.8)) * 0.5; break;
     case 'ecoline': v += (p.prod.plants * c.G + p.res.plants) * (greeneryValue(c) / 7 - greeneryValue(c) / 8); break;
     case 'inventrix': break;
+    case 'point-luna': v += expectedTagPlays(c, 'earth') * cardDrawValue(c); break;
+    case 'arklight': v += bio(['plant', 'animal']) * c.vp / 2; break;
+    case 'venusian-animals': v += expectedTagPlays(c, 'science') * c.vp; break;
+    case 'martian-zoo': v += expectedTagPlays(c, 'earth') * Math.max(0, c.G - 1.5) * resValue(c, 'mc') * 0.5; break;
+    case 'gmo-contract': v += bio(['plant', 'animal', 'microbe']) * 2 * resValue(c, 'mc'); break;
+    case 'spin-off-department': v += futurePlays(c) * 0.22 * cardDrawValue(c); break;
+    case 'vitor': v += futurePlays(c) * 0.3 * 3 * resValue(c, 'mc'); break;
+    case 'aphrodite': v += Math.min(venusLeft(s), c.G * s.players.length * 0.7) * 2 * resValue(c, 'mc'); break;
+    case 'manutech': v += c.G * 1.5 * resValue(c, 'mc'); break;
+    case 'poseidon': v += Math.max(0, c.G - 1) * s.players.length * 0.4 * prodValue(c, 'mc') * 0.5; break;
+    case 'lakefront-resorts': v += (maxOceans(s) - s.oceans) * prodValue(c, 'mc') * 0.5; break;
+    case 'aridor': v += 2 * prodValue(c, 'mc'); break;
+    case 'polyphemos': v -= c.G * 1.5 * 2 * resValue(c, 'mc'); break;
+    case 'terralabs-research': v += c.G * 1.5 * 2 * resValue(c, 'mc'); break;
+    case 'pristar': v += Math.min(c.G, 3) * 0.4 * (c.vp + 6 * resValue(c, 'mc')); break;
+    case 'event-analysts': v += Math.max(0, c.G - 1) * 2 * resValue(c, 'mc'); break;
+    case 'cryo-sleep': case 'rim-freighters': v += (p.fleets ?? 0) * Math.max(0, c.G - 1) * 0.7 * resValue(c, 'mc') * 2; break;
+    case 'trade-envoys': case 'trading-colony': v += (p.fleets ?? 0) * Math.max(0, c.G - 1) * 0.6 * 2 * resValue(c, 'mc'); break;
   }
   return v;
 }
@@ -700,6 +885,14 @@ export function positionBreakdown(s: GameState, pid: number, w: Weights, opts: S
     out.engine += actionFutureValue(c, id, p.usedActions.includes(id));
     out.engine += passiveValue(c, id);
   }
+  // expansions: colonies owned, spare trade fleets, standing in the parties, preludes still to play
+  if (c.s.colonies && !c.last) {
+    for (const t of coloniesInPlay(s)) for (const o of t.colonies) if (o === pid) out.engine += colonyDef(t.id).bonus.reduce((a, x) => a + opValue(c, x), 0) * tradesPerTile(s) * Math.max(0, c.G - 1);
+    // fleets keep trading in later generations; a fleet still home this generation is an option worth about half a trade
+    out.engine += (p.fleets ?? 0) * fleetValue(c) + Math.max(0, fleetsFree(s, pid)) * 0.5 * tradeNet(c);
+  }
+  out.engine += turmoilTerm(c);
+  for (const pre of p.preludes ?? []) out.hand += cardCoreValue(c, pre);
   // hand: the best cards we can realistically afford and play
   if (opts.hideHand) out.hand += p.hand.length * cardDrawValue(c) * 0.8;
   else out.hand += handValue(c);
@@ -913,6 +1106,7 @@ export function bonusValue(c: Ctx, sp: GameState['board'][number]): number {
   const charged = spaceCostApplies(s, sp);
   let v = charged ? -sp.cost! * resValue(c, 'mc') : 0;
   for (const b of sp.bonus) {
+    if (b === 'delegate') { v += delegateValue(c); continue; }
     if (b === 'card') v += cardDrawValue(c);
     else if (b === 'wild') v += Math.max(...(['mc', 'steel', 'titanium', 'plants', 'energy', 'heat'] as Res[]).map((r) => resValue(c, r)));
     else if (b === 'ocean') v += charged ? raiseValue(c, 'ocean') : 0;

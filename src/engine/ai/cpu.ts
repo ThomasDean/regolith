@@ -7,10 +7,10 @@ import { CARDS } from '../cards';
 import { P, tagCount } from '../helpers';
 import { applyActionMut } from '../game';
 import { shuffle } from '../rng';
-import { promptAnswers, turnActions } from '../moves';
-import { availableSpaces, greeneryCost, score } from '../queries';
+import { promptAnswers, subsets, turnActions } from '../moves';
+import { availableSpaces, buyCost, greeneryCost, score } from '../queries';
 import {
-  cardDrawValue, cardNetValue, clockOf, handValue, hash01, horizon, makeCtx, type Clock, opValue, positionValue, prodValue, resUnitValue, resValue,
+  cardCoreValue, cardDrawValue, cardEffectiveCost, cardNetValue, clockOf, handValue, hash01, horizon, leadMargin, makeCtx, type Clock, opValue, positionValue, prodValue, resUnitValue, resValue,
   spaceScore, styleFor, type Ctx, type Weights,
 } from './value';
 
@@ -86,6 +86,7 @@ export function cpuAction(s: GameState, level: Level, rnd: Rnd = stateRnd(s)): A
   if (s.prompt) return answerPrompt(s, s.prompt, cfg, rnd);
   switch (s.phase) {
     case 'setup': return chooseSetup(s, pid, cfg, rnd);
+    case 'prelude': return choosePrelude(s, pid, cfg, rnd);
     case 'research': return chooseResearch(s, pid, cfg, rnd);
     case 'finalGreenery':
       return P(s, pid).res.plants >= greeneryCost(s, pid) && availableSpaces(s, pid, 'greenery', 'greenery').length ? { t: 'plants' } : { t: 'pass' };
@@ -218,26 +219,53 @@ function pickCards(ctx: Ctx, offer: string[], cfg: CpuConfig, rnd: Rnd, priceEac
 function chooseResearch(s: GameState, pid: number, cfg: CpuConfig, rnd: Rnd): Action {
   const trial = sandbox(s, rnd);
   const ctx: Ctx = { ...makeCtx(trial, pid, cfg.weights), future: true };
-  return { t: 'research', keep: pickCards(ctx, P(trial, pid).research ?? [], cfg, rnd, 3) };
+  return { t: 'research', keep: pickCards(ctx, P(trial, pid).research ?? [], cfg, rnd, buyCost(trial, pid)) };
 }
 
 function chooseSetup(s: GameState, pid: number, cfg: CpuConfig, rnd: Rnd): Action {
   const su = P(s, pid).setup!;
   let best: { a: Action; v: number } | null = null;
   const corps = su.corps.filter((c) => c !== 'beginner-corporation');
+  const pairs = su.preludes ? subsets(su.preludes, 2, 2) : [undefined];
   for (const corp of corps) {
     const trial = sandbox(s, rnd);
-    applyActionMut(trial, { t: 'setup', corp, keep: [] });
+    applyActionMut(trial, { t: 'setup', corp, keep: [], ...(su.preludes ? { preludes: su.preludes.slice(0, 2) } : {}) });
     const tp = P(trial, pid);
     tp.hand = [];
     const ctx: Ctx = { ...makeCtx(trial, pid, cfg.weights), future: true };
-    const keep = pickCards(ctx, su.cards, cfg, rnd, 3);
+    // preludes: the pair worth most with this corporation (both get played at the start)
+    let preludes: string[] | undefined;
+    let preV = 0;
+    if (su.preludes) {
+      let bestPair = -Infinity;
+      for (const pair of pairs as string[][]) {
+        tp.preludes = pair;
+        const v = positionValue(trial, pid, cfg.weights) + gauss(rnd) * cfg.noise;
+        if (v > bestPair) { bestPair = v; preludes = pair; }
+      }
+      tp.preludes = preludes;
+      preV = 0;
+    }
+    const price = corp === 'polyphemos' ? 5 : corp === 'terralabs-research' ? 1 : 3;
+    const keep = pickCards(ctx, su.cards, cfg, rnd, price);
     tp.hand = keep;
-    tp.res.mc -= keep.length * 3;
-    const v = positionValue(trial, pid, cfg.weights) + gauss(rnd) * cfg.noise * 2;
-    if (!best || v > best.v) best = { a: { t: 'setup', corp, keep }, v };
+    tp.res.mc -= keep.length * price;
+    const v = positionValue(trial, pid, cfg.weights) + preV + gauss(rnd) * cfg.noise * 2;
+    if (!best || v > best.v) best = { a: { t: 'setup', corp, keep, ...(preludes ? { preludes } : {}) }, v };
   }
   return best!.a;
+}
+
+/** Order the preludes: whichever leaves the better position first (money before spending). */
+function choosePrelude(s: GameState, pid: number, cfg: CpuConfig, rnd: Rnd): Action {
+  const opts = (P(s, pid).preludes ?? []).map((card): Action => ({ t: 'prelude', card }));
+  if (opts.length <= 1) return opts[0];
+  let best = opts[0], bestV = -Infinity;
+  for (const a of opts) {
+    const v = valueAfter(s, a, pid, { ...cfg, samples: 1 }, rnd) ?? -Infinity;
+    if (v > bestV) { bestV = v; best = a; }
+  }
+  return best;
 }
 
 // ---------------- prompts ----------------
@@ -287,6 +315,9 @@ export function answerPrompt(s: GameState, pr: Prompt, cfg: CpuConfig, rnd: Rnd,
       const val = (card: string | null): number => {
         if (card === null) return 0;
         if (op.k === 'addRes') return resUnitValue(ctx, card);
+        if (op.k === 'spendRes') return -resUnitValue(ctx, card);
+        if (op.k === 'playFromHand') return cardCoreValue(ctx, card) - Math.max(0, cardEffectiveCost(ctx, card) - op.discount * resValue(ctx, 'mc'));
+        if (op.k === 'viron') return CARDS[card].action!.run(s, pid, card).reduce((a, o) => a + opValue(ctx, o, card), 0) - (CARDS[card].action!.mc ?? 0) * resValue(ctx, 'mc');
         if (op.k === 'robotic') {
           try {
             return CARDS[card].play!(s, pid, card).filter((o) => o.k === 'prod').reduce((a, o) => a + opValue(ctx, o, card), 0);
@@ -303,11 +334,17 @@ export function answerPrompt(s: GameState, pr: Prompt, cfg: CpuConfig, rnd: Rnd,
       return { t: 'answer', card: pick(opts, val) };
     }
     case 'choice': {
+      if (pr.keys) return { t: 'answer', option: keyedChoice(s, pr, cfg, rnd, fast) };
       const ch = op as Extract<Op, { k: 'choose' }>;
       const idx = ch.options.map((_, i) => i).filter((i) => ch.options[i].ok);
       return { t: 'answer', option: pick(idx, (i) => ch.options[i].ops.reduce((a, o) => a + opValue(ctx, o, pr.item.src), 0)) };
     }
     case 'cards': {
+      if (op.k === 'discard') {
+        const ranked = pr.cards.map((id) => ({ id, v: cardNetValue(ctx, id) })).sort((a, b) => a.v - b.v);
+        return { t: 'answer', cards: ranked.slice(0, pr.min).map((r) => r.id) };
+      }
+      if (op.k === 'preludeDraw') return { t: 'answer', cards: [pick(pr.cards, (id) => cardCoreValue(ctx, id))] };
       if (op.k === 'discardDraw') {
         const worst = pick(pr.cards, (id) => -cardNetValue(ctx, id));
         return { t: 'answer', cards: cardNetValue(ctx, worst) < cardDrawValue(ctx) * 0.8 ? [worst] : [] };
@@ -322,6 +359,12 @@ export function answerPrompt(s: GameState, pr: Prompt, cfg: CpuConfig, rnd: Rnd,
     }
     case 'amount': {
       if (op.k === 'amount' && op.id === 'insulation') return { t: 'answer', amount: prodValue(ctx, 'mc') > prodValue(ctx, 'heat') ? pr.max : 0 };
+      if (op.k === 'amount' && (op.id === 'sulphur' || op.id === 'titanShuttles')) {
+        // cash in when the resources aren't worth more where they are
+        const unit = pr.item.src ? resUnitValue(ctx, pr.item.src) : 0;
+        const gain = op.id === 'sulphur' ? 3 * resValue(ctx, 'mc') : resValue(ctx, 'titanium');
+        return { t: 'answer', amount: gain >= unit * 0.9 ? pr.max : 0 };
+      }
       // power infrastructure: keep the energy our other actions want
       const p = P(s, pid);
       const keep = ['ironworks', 'steelworks', 'ore-processor', 'water-splitting-plant', 'physics-complex', 'development-center', 'martian-rails']
@@ -330,6 +373,40 @@ export function answerPrompt(s: GameState, pr: Prompt, cfg: CpuConfig, rnd: Rnd,
     }
   }
   return promptAnswers(s)[0];
+}
+
+/**
+ * Choices built from the state (which colony tile, which party, what World Government raises…):
+ * try each one on a copy and keep the best position. World Government also weighs the clock:
+ * a leader is happy to hurry the end, anyone behind would rather raise Venus.
+ */
+function keyedChoice(s: GameState, pr: Extract<Prompt, { kind: 'choice' }>, cfg: CpuConfig, rnd: Rnd, fast: boolean): number {
+  const pid = pr.pid;
+  const idx = pr.options.map((_, i) => i).filter((i) => pr.options[i].ok);
+  if (idx.length === 1) return idx[0];
+  const clock = clockOf(s);
+  const ctx = makeCtx(s, pid, cfg.weights, clock);
+  const lead = pr.item.op.k === 'wgt' ? leadMargin(ctx) : 0;
+  let best = idx[0], bestV = -Infinity;
+  for (const i of idx) {
+    const c = sandbox(s, rnd);
+    let v: number;
+    try {
+      applyActionMut(c, { t: 'answer', option: i });
+      // a follow-up of ours (where the ocean goes) is decided greedily
+      for (let k = 0; k < 6 && c.prompt && c.prompt.pid === pid && c.prompt.kind !== 'choice'; k++) applyActionMut(c, answerPrompt(c, c.prompt, cfg, rnd, true));
+      v = evaluate(c, pid, cfg, clock);
+    } catch {
+      continue;
+    }
+    if (pr.item.op.k === 'wgt') {
+      const key = pr.keys![i];
+      v += key === 'venus' ? -Math.max(-4, Math.min(4, lead * 0.3)) : Math.max(-4, Math.min(4, lead * 0.3));
+    }
+    v += fast ? 0 : gauss(rnd) * cfg.noise * 0.3;
+    if (v > bestV) { bestV = v; best = i; }
+  }
+  return best;
 }
 
 export { horizon, tagCount };

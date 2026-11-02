@@ -694,6 +694,31 @@ const jovian: Scene = (g) => {
   );
 };
 
+// Venus: a sulphur cloud deck under a hazy sun, sometimes with an aerostat riding it
+const venus: Scene = (g) => {
+  const deck = g.pick([['#f2dcb0', '#e2b870', '#c98c48'], ['#efe0c0', '#d9c08a', '#b49058'], ['#f6e6c8', '#e8c48a', '#d49a5a'], ['#e8d8b8', '#c8a878', '#9a7448']]);
+  const bx = g.f(30, 130), by = g.f(16, 30), br = g.f(8, 12);
+  const ship = !/microbe|insect|bacteria|animal|bird|plant|soil/.test(g.words) || g.r() > 0.6;
+  return (
+    <>
+      <Backdrop g={g} sky={g.pick([SKY.dawn, SKY.dust, SKY.dusk])} />
+      {[0, 1, 2, 3].map((k) => <path key={k} d={ridge(g, 38 + k * 11, 4.5 - k, 8)} fill={deck[k % 3]} opacity={0.6 + k * 0.12} />)}
+      {Array.from({ length: g.i(2, 4) }, (_, k) => (
+        <path key={`w${k}`} d={`M${g.f(-10, 60)},${g.f(30, 70)} q${g.f(20, 40)},-6 ${g.f(50, 90)},0`} fill="none" stroke="#fff6e0" strokeOpacity="0.45" strokeWidth={g.f(1, 2.4)} strokeLinecap="round" />
+      ))}
+      {ship && (
+        <g transform={`translate(${bx} ${by})`}>
+          <ellipse rx={br * 1.6} ry={br} fill="#e8e3d8" stroke="#4a4e60" strokeWidth="0.8" />
+          <path d={`M${-br * 1.6},0 h${br * 3.2}M${-br * 1.1},${-br * 0.7} q${br * 1.1},-2 ${br * 2.2},0`} fill="none" stroke="#9aa0ae" strokeWidth="0.7" />
+          <line x1={-br * 0.6} y1={br * 0.85} x2={-br * 0.35} y2={br + 5} stroke="#4a4e60" strokeWidth="0.6" />
+          <line x1={br * 0.6} y1={br * 0.85} x2={br * 0.35} y2={br + 5} stroke="#4a4e60" strokeWidth="0.6" />
+          <rect x={-br * 0.5} y={br + 5} width={br} height="4" rx="1" fill={g.pick(['#c4472f', '#3b3f58', '#d79a4a'])} />
+        </g>
+      )}
+    </>
+  );
+};
+
 const earth: Scene = (g) => {
   const ex = g.f(40, 120), er = g.f(16, 22);
   return (
@@ -871,14 +896,15 @@ function corpEmblem(g: G): React.ReactNode {
 }
 
 // ---------- scene choice ----------
-export type SceneKind = 'impact' | 'ice' | 'flora' | 'fauna' | 'microbe' | 'city' | 'power' | 'industry' | 'orbit' | 'jovian' | 'earth' | 'science' | 'atmosphere' | 'ops' | 'survey' | 'corp';
+export type SceneKind = 'impact' | 'ice' | 'flora' | 'fauna' | 'microbe' | 'city' | 'power' | 'industry' | 'orbit' | 'jovian' | 'earth' | 'science' | 'atmosphere' | 'ops' | 'survey' | 'corp' | 'venus';
 
 export function sceneFor(c: CardDef): SceneKind {
   if (c.type === 'corp') return 'corp';
   const w = `${c.id} ${c.name}`.toLowerCase();
   const t = new Set(c.tags);
   if (/asteroid|comet|deimos|meteor/.test(w)) return 'impact';
-  if (/hack|sabotage|raider|bribe|indentured|virus|security|penal/.test(w)) return 'ops';
+  if (/hack|sabotage|raider|bribe|indentured|virus|security|penal|banned|confidence|air-raid|conscription|taxation/.test(w)) return 'ops';
+  if ((t.has('venus') && !t.has('animal') && !t.has('microbe') && !t.has('plant')) || /floater|dirigible|balloon|aerial|aerosport|airliner|stratopolis|scrapping/.test(w)) return 'venus';
   if (/aquifer|lake|flood|water|permafrost|reservoir|ice-cap|polar|great-dam|wave-power|convoy|europa/.test(w)) return 'ice';
   if (t.has('animal') || /bird|fish|pets|livestock|predator|herbivore/.test(w)) return 'fauna';
   if (t.has('microbe') && !t.has('plant')) return 'microbe';
@@ -896,7 +922,7 @@ export function sceneFor(c: CardDef): SceneKind {
 }
 
 const SCENES: Record<SceneKind, Scene> = {
-  impact, ice, flora, fauna, microbe, city, power, industry, orbit, jovian, earth, science, atmosphere, ops, survey, corp: corpEmblem,
+  impact, ice, flora, fauna, microbe, city, power, industry, orbit, jovian, earth, science, atmosphere, ops, survey, venus, corp: corpEmblem,
 };
 
 export const CardArt = memo(function CardArt({ card, className }: { card: CardDef; className?: string }) {

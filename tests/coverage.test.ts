@@ -1,7 +1,7 @@
 import { it, expect } from 'vitest';
 import { createGame, applyAction } from '../src/engine/game';
 import { randomAction } from '../src/engine/bot';
-import { CARDS, PROJECT_IDS } from '../src/engine/cards';
+import { CARDS, PRELUDE_IDS, PROJECT_IDS } from '../src/engine/cards';
 import { RESOURCES } from '../src/engine/types';
 
 function rng(seed: number) { let t = seed; return () => { t = (t + 0x6d2b79f5) | 0; let x = Math.imul(t ^ (t >>> 15), t | 1); x ^= x + Math.imul(x ^ (x >>> 7), x | 61); return ((x ^ (x >>> 14)) >>> 0) / 4294967296; }; }
@@ -27,8 +27,28 @@ it('plays every card and keeps invariants over many random games', () => {
     s.players.forEach((p) => corps.add(p.corp!));
     gens.push(s.generation);
   }
-  const missing = PROJECT_IDS.filter((id) => !played.has(id));
+  const missing = PROJECT_IDS.filter((id) => (CARDS[id].set === 'base' || CARDS[id].set === 'corp') && !played.has(id));
   const withActions = Object.values(CARDS).filter((c) => c.action).map((c) => c.id).filter((id) => !acted.has(id));
   console.log('never played:', missing, '\nactions never used:', withActions, '\ncorps:', corps.size, 'avg gens', gens.reduce((a, b) => a + b) / gens.length);
   expect(missing.length).toBeLessThan(5);
+}, 600000);
+
+it('plays every expansion card over random games with all four expansions', () => {
+  const played = new Set<string>();
+  for (let g = 0; g < 60; g++) {
+    let s = createGame([0, 1, 2, 3].slice(0, 2 + (g % 3)).map((i) => ({ name: `P${i}`, color: '#000', cpu: null })), { seed: 9000 + g, expansions: { prelude: true, venus: true, colonies: true, turmoil: true } });
+    const r = rng(g * 31 + 5);
+    let steps = 0;
+    while (s.phase !== 'over' && steps < 60000) {
+      const a = randomAction(s, r);
+      if (a.t === 'play' || a.t === 'prelude') played.add(a.card);
+      s = applyAction(s, a);
+      steps++;
+    }
+    expect(s.phase).toBe('over');
+  }
+  const pool = [...PROJECT_IDS, ...PRELUDE_IDS].filter((id) => !['base', 'corp'].includes(CARDS[id].set));
+  const missing = pool.filter((id) => !played.has(id));
+  console.log('expansion cards never played:', missing);
+  expect(missing.length).toBeLessThan(8);
 }, 600000);

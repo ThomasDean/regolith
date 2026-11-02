@@ -47,6 +47,15 @@ const TAG_GLYPH: Record<Tag, React.ReactNode> = {
     </g>
   ),
   city: <path d="M1.5 14V8h3V5h3v9-6h3V2h3v12Z" fill="currentColor" />,
+  // veiled planet: a disc under swirled cloud bands
+  venus: (
+    <g>
+      <circle cx="8" cy="8" r="6.2" fill="currentColor" />
+      <path d="M2.4 6.4c2.2-1.6 5.6-1.6 8.2.2 1.4 1 2.6 1 3.4.4M2 9.4c2.6-1.2 5.2-.6 7.6.8 1.6.9 3.2.8 4.4.2" fill="none" stroke="var(--glyph-bg, #1d2840)" strokeWidth="1.1" strokeLinecap="round" opacity="0.7" />
+    </g>
+  ),
+  // wild: a many-pointed asterisk
+  wild: <path d="M8 1.5v13M2.4 4.75l11.2 6.5M2.4 11.25l11.2-6.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />,
   // impact burst
   event: <path d="M8 1 9.6 5.4 14 4 11.2 7.8 15 10.2 10.4 10.4 10 15 7.6 11.2 4 14 4.8 9.8 1 7.4 5.6 6.4Z" fill="currentColor" />,
 };

@@ -225,23 +225,26 @@ function StatsTable({ s }: { s: GameState }) {
       p,
       cards: p.played.length, events: eventsPlayed(s, p.id),
       cities: cities(s, { pid: p.id }).length, greeneries: greeneries(s, p.id).length, special: tiles.filter((x) => x.tile?.kind === 'special').length,
-      temp: s.raised?.[p.id]?.temp, oxy: s.raised?.[p.id]?.oxy, ocean: s.raised?.[p.id]?.ocean,
+      temp: s.raised?.[p.id]?.temp, oxy: s.raised?.[p.id]?.oxy, ocean: s.raised?.[p.id]?.ocean, venus: s.raised?.[p.id]?.venus,
       mc: p.prod.mc, ms: s.milestones.filter((m) => m.pid === p.id).length, aw: s.awards.filter((a) => a.pid === p.id).length,
+      colonies: s.colonies?.reduce((a, c) => a + c.colonies.filter((o) => o === p.id).length, 0),
     };
   });
+  const venus = s.venus !== undefined;
+  const cols = !!s.colonies;
   const dash = (v: number | undefined) => (v === undefined ? '–' : v);
   return (
     <div className="table-scroll">
       <table className="scores stats">
         <thead>
-          <tr><th>Player</th><th>Cards played</th><th>Events</th><th>Cities</th><th>Greeneries</th><th>Special tiles</th><th title="Temperature steps raised">Temp steps</th><th title="Oxygen steps raised">O₂ steps</th><th>Oceans placed</th><th>M€ prod.</th><th>Milestones</th><th>Awards funded</th></tr>
+          <tr><th>Player</th><th>Cards played</th><th>Events</th><th>Cities</th><th>Greeneries</th><th>Special tiles</th><th title="Temperature steps raised">Temp steps</th><th title="Oxygen steps raised">O₂ steps</th><th>Oceans placed</th>{venus && <th title="Venus steps raised">Venus steps</th>}{cols && <th>Colonies</th>}<th>M€ prod.</th><th>Milestones</th><th>Awards funded</th></tr>
         </thead>
         <tbody>
           {rows.map((r) => (
             <tr key={r.p.id} style={{ ['--pc' as string]: r.p.color }}>
               <th scope="row"><span className="swatch" />{r.p.name}<small>{r.p.corp ? CARDS[r.p.corp].name : ''}</small></th>
               <td>{r.cards}</td><td>{r.events}</td><td>{r.cities}</td><td>{r.greeneries}</td><td>{r.special}</td>
-              <td>{dash(r.temp)}</td><td>{dash(r.oxy)}</td><td>{dash(r.ocean)}</td><td>{r.mc}</td><td>{r.ms}</td><td>{r.aw}</td>
+              <td>{dash(r.temp)}</td><td>{dash(r.oxy)}</td><td>{dash(r.ocean)}</td>{venus && <td>{dash(r.venus)}</td>}{cols && <td>{dash(r.colonies)}</td>}<td>{r.mc}</td><td>{r.ms}</td><td>{r.aw}</td>
             </tr>
           ))}
         </tbody>

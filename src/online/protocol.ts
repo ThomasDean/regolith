@@ -1,12 +1,12 @@
 // Shapes shared by the online client and the referee (the server that runs the engine).
-import type { Action, GameState, Level } from '../engine/types';
+import type { Action, Expansions, GameState, Level } from '../engine/types';
 
 export type SeatKind = 'human' | 'open' | Level;
 
 export interface SeatRow { kind: SeatKind; name: string; color: string; user: string | null }
 
-/** Map and milestone/award choice for an online game (absent: Tharsis with its own set). */
-export interface RoomSettings { board?: string; milestones?: string[]; awards?: string[] }
+/** Map, milestone/award and expansion choice for an online game (absent: Tharsis with its own set, no expansions). */
+export interface RoomSettings { board?: string; milestones?: string[]; awards?: string[]; expansions?: Expansions }
 
 /** The public row every member of a room can read (and gets realtime updates for). */
 export interface RoomRow {

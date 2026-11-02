@@ -7,7 +7,7 @@
 // It is pure TypeScript with the storage behind an interface, so the same code runs in the
 // Supabase Edge Function (server/edge.ts) and in the tests with an in-memory store.
 import type { Action, GameState, Level } from '../engine/types';
-import { applyActionMut, createGame } from '../engine/game';
+import { applyActionMut, cleanExpansions, createGame } from '../engine/game';
 import { cpuAction } from '../engine/ai/cpu';
 import { decider } from '../engine/moves';
 import { HIDDEN, type PlayReply, type PlayRequest, type RoomRow, type SeatRow } from './protocol';
@@ -60,15 +60,16 @@ const simultaneous = (s: GameState) => (s.phase === 'setup' || s.phase === 'rese
 /** Time a single advance may spend on back-to-back CPU corporation/research picks. */
 const PICK_BUDGET_MS = 700;
 
-/** The room's map and milestones/awards, checked: unknown maps fall back to Tharsis, bad lists are refused. */
-export function gameSettings(room: RoomRow): { board: BoardId; milestones?: string[]; awards?: string[] } {
+/** The room's map, milestones/awards and expansions, checked: unknown maps fall back to Tharsis, bad lists are refused. */
+export function gameSettings(room: RoomRow): { board: BoardId; milestones?: string[]; awards?: string[]; expansions: ReturnType<typeof cleanExpansions> } {
   const st = room.settings ?? {};
   const board = BOARD_IDS.includes(st.board as BoardId) ? (st.board as BoardId) : 'tharsis';
+  const expansions = cleanExpansions(st.expansions && typeof st.expansions === 'object' ? st.expansions : undefined);
   const ok = (xs: unknown, kind: 'milestone' | 'award') =>
-    Array.isArray(xs) && xs.length === 5 && new Set(xs).size === 5 && xs.every((id) => typeof id === 'string' && maDef(id)?.kind === kind && !availability(board, id));
+    Array.isArray(xs) && xs.length === 5 && new Set(xs).size === 5 && xs.every((id) => typeof id === 'string' && maDef(id)?.kind === kind && !availability(board, id, expansions));
   if (st.milestones !== undefined && !ok(st.milestones, 'milestone')) throw new HttpError(400, 'Those milestones can’t be used');
   if (st.awards !== undefined && !ok(st.awards, 'award')) throw new HttpError(400, 'Those awards can’t be used');
-  return { board, milestones: st.milestones, awards: st.awards };
+  return { board, milestones: st.milestones, awards: st.awards, expansions };
 }
 
 export function seatOf(room: RoomRow, uid: string): number {
@@ -91,13 +92,18 @@ export function viewFor(s: GameState, seat: number): GameState {
   v.options = { ...v.options, seed: 0 };
   v.deck = v.deck.map(() => HIDDEN);
   v.discard = v.discard.map(() => HIDDEN);
+  if (v.preludeDeck) v.preludeDeck = v.preludeDeck.map(() => HIDDEN);
+  if (v.turmoil) v.turmoil = { ...v.turmoil, deck: v.turmoil.deck.map(() => HIDDEN) };
   for (const p of v.players) {
     if (p.id === seat) continue;
     p.hand = p.hand.map(() => HIDDEN);
-    if (p.setup) p.setup = { corps: p.setup.corps.map(() => HIDDEN), cards: p.setup.cards.map(() => HIDDEN) };
+    if (p.setup) p.setup = { corps: p.setup.corps.map(() => HIDDEN), cards: p.setup.cards.map(() => HIDDEN), ...(p.setup.preludes ? { preludes: p.setup.preludes.map(() => HIDDEN) } : {}) };
     if (p.research) p.research = p.research.map(() => HIDDEN);
+    if (p.preludes) p.preludes = p.preludes.map(() => HIDDEN);
   }
   if (v.prompt && v.prompt.pid !== seat && v.prompt.kind === 'cards') v.prompt = { ...v.prompt, cards: v.prompt.cards.map(() => HIDDEN) };
+  // playing a card from hand (Ecology Experts, Eccentric Sponsor) offers hand cards
+  if (v.prompt && v.prompt.pid !== seat && v.prompt.kind === 'card' && v.prompt.item.op.k === 'playFromHand') v.prompt = { ...v.prompt, options: v.prompt.options.map(() => HIDDEN) };
   return v;
 }
 

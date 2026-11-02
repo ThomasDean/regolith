@@ -152,9 +152,18 @@ describe('milestones and awards', () => {
       const sel = boardMA(b, setupRandom(1));
       expect(sel.milestones.length).toBe(5);
       expect(sel.awards.length).toBe(5);
-      for (const id of BOARDS[b].milestones) expect(sel.milestones).toContain(id);
+      for (const id of BOARDS[b].milestones) if (!availability(b, id)) expect(sel.milestones).toContain(id);
       for (const id of BOARDS[b].awards) expect(sel.awards).toContain(id);
       expect(new Set(sel.milestones).size).toBe(5);
+      // without its expansion, an expansion milestone is never drawn
+      for (const id of sel.milestones) expect(availability(b, id)).toBeNull();
+    }
+  });
+  it('with every expansion, each map plays its full printed set', () => {
+    const ex = { prelude: true, venus: true, colonies: true, turmoil: true };
+    for (const b of BOARD_IDS) {
+      const sel = boardMA(b, setupRandom(1), ex);
+      for (const id of BOARDS[b].milestones) expect(sel.milestones).toContain(id);
     }
   });
 

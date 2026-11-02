@@ -598,3 +598,56 @@ button.card:hover { --lift: -4px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 12
 .room-setup summary p { display: inline; }
 .room-setup[open] summary { margin-bottom: 10px; }
 fieldset.plain { border: 0; margin: 0; padding: 0; min-width: 0; display: grid; gap: 14px; }
+
+/* ---------- expansions ---------- */
+.exp-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; }
+.exp-opt { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; align-items: start; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-m); padding: 8px 10px; cursor: pointer; }
+.exp-opt.on { border-color: var(--focus); box-shadow: inset 0 0 0 1px var(--focus); }
+.exp-opt input { margin-top: 3px; }
+.exp-opt span { display: grid; gap: 2px; }
+.exp-opt small { color: var(--muted); font-size: 0.78rem; line-height: 1.3; }
+.card-prelude { --band: #6a4e8a; }
+.card-set { font-weight: 400; opacity: 0.75; }
+.tube.venus .tube-fill { --glow: rgba(217, 183, 90, 0.55); background-image: linear-gradient(to top, #7a5a2a, #c99a4a 50%, #f2dcb0); }
+.chip-note { font-size: 0.78rem; align-self: center; }
+
+.xpanel { background: var(--panel); border-radius: var(--radius-m); padding: 10px 12px; display: grid; gap: 8px; }
+.xpanel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.xpanel-head .muted { font-size: 0.8rem; }
+
+.colony-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.colony { background: var(--panel-2); border-radius: var(--radius-s); padding: 6px 8px; display: grid; gap: 4px; }
+.colony.inactive { opacity: 0.6; }
+.colony-top { display: flex; align-items: center; gap: 8px; }
+.colony-slots { display: inline-flex; gap: 3px; margin-left: auto; }
+.colony-slot { width: 12px; height: 12px; border-radius: 50%; border: 1.5px dashed var(--line); }
+.colony-slot.on { background: var(--pc); border: 1.5px solid rgba(0, 0, 0, 0.5); }
+.fleet { color: var(--pc); font-size: 1rem; line-height: 1; filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.6)); }
+.colony-track { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; font: 600 0.72rem var(--display); text-align: center; }
+.colony-track li { background: #1b2742; border-radius: 3px; padding: 2px 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.colony-track li.floor { background: #22324f; }
+.colony-track li.marker { background: var(--focus); color: #1d2840; }
+.colony-track li.boost { box-shadow: inset 0 0 0 1.5px var(--focus); color: var(--text); }
+.colony-text { font-size: 0.76rem; color: var(--muted); line-height: 1.3; }
+.colony-trade { display: flex; gap: 4px; flex-wrap: wrap; }
+
+.gov { border-left: 4px solid var(--party); padding: 2px 0 2px 8px; display: grid; gap: 4px; font-size: 0.85rem; }
+.gov-policy { color: var(--muted); font-size: 0.8rem; }
+.party-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.party { background: var(--panel-2); border-radius: var(--radius-s); padding: 6px 8px; border-top: 3px solid var(--party); display: grid; gap: 4px; align-content: start; }
+.party.dominant { box-shadow: inset 0 0 0 1px var(--party); }
+.party-top { display: flex; justify-content: space-between; align-items: center; gap: 4px; font-size: 0.85rem; }
+.party-top .badge { font-size: 0.66rem; }
+.delegates { display: flex; flex-wrap: wrap; gap: 3px; min-height: 14px; }
+.delegate { width: 11px; height: 14px; background: var(--pc); border-radius: 5px 5px 2px 2px; border: 1px solid rgba(0, 0, 0, 0.5); }
+.delegate.leader { width: 13px; height: 16px; box-shadow: 0 0 0 2px var(--focus); }
+.party-bonus { font-size: 0.72rem; line-height: 1.25; }
+.party .btn { justify-self: start; }
+.events { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 0.8rem; }
+.events li { border-left: 3px solid var(--o2); padding-left: 6px; }
+.events li.bad { border-left-color: var(--oxide); }
+.event-text { color: var(--muted); }
+@media (max-width: 640px) {
+  .party-list { grid-template-columns: minmax(0, 1fr); }
+  .tube.venus .tube-fill { background-image: linear-gradient(to right, #7a5a2a, #c99a4a 50%, #f2dcb0); }
+}

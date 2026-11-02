@@ -42,7 +42,7 @@ export interface BoardDef {
 // c card, h heat, e energy, w any one standard resource, O "pay 6 M€: place an ocean" (Hellas
 // south pole), T "pay 4 M€: raise temperature" (Vastitas north pole).
 type Cell = string;
-const BONUS: Record<string, SpaceBonus> = { s: 'steel', t: 'titanium', p: 'plants', c: 'card', h: 'heat', e: 'energy', w: 'wild', O: 'ocean', T: 'temp' };
+const BONUS: Record<string, SpaceBonus> = { s: 'steel', t: 'titanium', p: 'plants', c: 'card', h: 'heat', e: 'energy', w: 'wild', O: 'ocean', T: 'temp', d: 'delegate' };
 const COST: Partial<Record<SpaceBonus, number>> = { ocean: 6, temp: 4 };
 
 const STANDARD: BoardParams = {
@@ -141,13 +141,13 @@ const LAYOUTS: Record<BoardId, Layout> = {
   amazonis: {
     rows: [
       ['L s', 'L ss', 'L s', 'L c', 'L tt', 'L'],
-      ['O', 'L', 'L s', 'L', 'L p', 'O pp', 'O tt'],
+      ['O', 'L d', 'L s', 'L', 'L p', 'O pp', 'O tt'],
       ['O ss', 'L', 'L cc', 'L', 'L p', 'O', 'L', 'L'],
       ['L t', 'O', 'L', 'L', 'L p', 'L p', 'L pp', 'L p', 'L pc'],
       ['V ss', 'L p', 'L w', 'L p', 'O c', 'L p', 'L pp', 'L p', 'L w', 'O pp'],
       ['L p', 'L p', 'L pp', 'L pp', 'O pp', 'O pp', 'L spp', 'L p', 'L', 'L p', 'O c'],
       ['L p', 'L pp', 'O pp', 'L ee', 'L e', 'L ee', 'L', 'L p', 'L p', 'L'],
-      ['L p', 'O cc', 'L p', 'L e', 'L ee', 'L p', 'V', 'L s', 'V'],
+      ['L p', 'O cc', 'L p', 'L e', 'L ee', 'L p', 'V dd', 'L s', 'V d'],
       ['O st', 'L', 'L t', 'L', 'L', 'L pp', 'L', 'V t'],
       ['O', 'L', 'L w', 'L', 'L ppp', 'L pp', 'V ss'],
       ['L', 'L st', 'L ss', 'L', 'L p', 'L c'],
@@ -192,9 +192,9 @@ export const BOARDS: Record<BoardId, BoardDef> = {
       'The two landing sites (two-card spaces) pay extra cards.',
       'No volcanoes: Lava Flows may go on any land space.',
       'No Noctis region: Noctis City is placed like any other city.',
-      'Pioneer (colonies) needs the Colonies expansion; another milestone takes its place.',
+      'Pioneer (colonies) needs Colonies; without it another milestone takes its place.',
     ],
-    milestones: ['manager', 'trader', 'metallurgist', 'researcher'],
+    milestones: ['manager', 'trader', 'metallurgist', 'researcher', 'pioneer'],
     awards: ['suburbian', 'investor', 'botanist', 'incorporator', 'metropolist'],
   },
   cimmeria: {
@@ -204,9 +204,9 @@ export const BOARDS: Record<BoardId, BoardDef> = {
       'Lava Flows goes on one of the four volcanic areas.',
       'No Noctis region: Noctis City is placed like any other city.',
       'The Gale crater colony space only matters with Colonies, so it is a plain land space here.',
-      'Planetologist needs Venus tags; another milestone takes its place.',
+      'Planetologist needs Venus Next; without it another milestone takes its place.',
     ],
-    milestones: ['architect', 'coastguard', 'forester', 'fundraiser'],
+    milestones: ['architect', 'coastguard', 'forester', 'fundraiser', 'planetologist'],
     awards: ['electrician', 'founder', 'mogul', 'zoologist', 'forecaster'],
   },
   vastitas: {
@@ -216,7 +216,7 @@ export const BOARDS: Record<BoardId, BoardDef> = {
       'North Pole: placing a tile on the frozen CO₂ costs 4 M€ and raises the temperature 1 step (free once temperature is maxed).',
       'Lava Flows goes on one of the four volcanic areas.',
       'No Noctis region: Noctis City is placed like any other city.',
-      'Viking delegate bonuses need Turmoil and are ignored.',
+      'Viking delegate bonuses aren’t on this version of the map.',
     ],
     milestones: ['agronomist', 'engineer', 'spacefarer', 'geologist', 'farmer'],
     awards: ['traveller', 'landscaper', 'highlander', 'promoter', 'blacksmith'],
@@ -234,9 +234,9 @@ export const BOARDS: Record<BoardId, BoardDef> = {
       'Track bonuses: +1 plant production at −12 °C, a card at 7 % oxygen, a temperature step at 11 % oxygen.',
       'Wild bonus spaces give any one standard resource of your choice.',
       'Lava Flows goes on one of the five volcanoes. Noctis City is placed like any other city.',
-      'Lobbyist and the delegate bonuses need Turmoil; another milestone takes Lobbyist’s place.',
+      'Delegate bonuses place one of your delegates with Turmoil (nothing otherwise). Lobbyist needs Turmoil; without it another milestone takes its place.',
     ],
-    milestones: ['terran', 'landshaper', 'merchant', 'sponsor'],
+    milestones: ['terran', 'landshaper', 'merchant', 'sponsor', 'lobbyist'],
     awards: ['collector', 'innovator', 'constructor', 'manufacturer', 'physicist'],
   },
 };
@@ -244,10 +244,14 @@ export const BOARDS: Record<BoardId, BoardDef> = {
 export const NOCTIS = '31';
 export const GANYMEDE = 'g1';
 export const PHOBOS = 'g2';
+/** Venus Next's city spaces off Mars. */
+export const OFF_SPACES = { dawnCity: 'v1', lunaMetropolis: 'v2', maxwellBase: 'v3', stratopolis: 'v4' } as const;
+const OFF_NAMES: Record<string, string> = { v1: 'Dawn City', v2: 'Luna Metropolis', v3: 'Maxwell Base', v4: 'Stratopolis' };
+export const MAX_VENUS = 30;
 /** Kept for older imports: Tharsis' volcanoes. */
 export const VOLCANIC = ['09', '14', '21', '29'];
 
-export function createBoard(id: BoardId = 'tharsis'): Space[] {
+export function createBoard(id: BoardId = 'tharsis', opts: { venus?: boolean } = {}): Space[] {
   const { rows, names = {}, reserved } = LAYOUTS[id];
   const mid = (rows.length - 1) / 2;
   const spaces: Space[] = [];
@@ -269,6 +273,7 @@ export function createBoard(id: BoardId = 'tharsis'): Space[] {
   });
   spaces.push({ id: GANYMEDE, row: -1, col: 0, x: 0, type: 'off', bonus: [], name: 'Ganymede Colony' });
   spaces.push({ id: PHOBOS, row: -1, col: 1, x: 0, type: 'off', bonus: [], name: 'Phobos Space Haven' });
+  if (opts.venus) Object.values(OFF_SPACES).forEach((sid, i) => spaces.push({ id: sid, row: -1, col: 2 + i, x: 0, type: 'off', bonus: [], name: OFF_NAMES[sid] }));
   return spaces;
 }
 
