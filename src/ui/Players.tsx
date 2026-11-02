@@ -49,6 +49,8 @@ export function Players({ s, viewer, onView, queued = [] }: { s: GameState; view
               <span className="tr" title="Terraform rating"><TrIcon /> TR <b><Num value={p.tr} /></b></span>
               <span>Hand <b>{p.hand.length}</b></span>
               <span>Played <b>{p.played.length}</b></span>
+              {p.fleets !== undefined && <span title="Trade fleets free / owned, and colonies">Fleets <b>{(p.fleets ?? 0) - (p.fleetsUsed ?? 0)}/{p.fleets}</b> · Colonies <b>{s.colonies?.reduce((a, c) => a + c.colonies.filter((o) => o === p.id).length, 0) ?? 0}</b></span>}
+              {s.turmoil && <span title="Delegates in reserve">Delegates <b>{s.turmoil.reserve[p.id]}</b></span>}
               {p.passed && s.phase === 'action' && <span className="badge">Passed</span>}
               {acting && <span className="badge live">{s.phase === 'action' ? `Turn, action ${s.actionsThisTurn + 1}` : 'Deciding'}</span>}
             </div>

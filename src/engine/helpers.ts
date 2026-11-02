@@ -1,5 +1,5 @@
 // Small read-only helpers shared by the card catalogue and the engine.
-import type { GameState, Player, Space, Tag } from './types';
+import type { CardRes, GameState, Player, Space, Tag } from './types';
 import { CARDS } from './cards';
 import { neighbours, onMars } from './board';
 
@@ -37,3 +37,19 @@ export function adjacentCount(s: GameState, id: string, pred: (x: Space) => bool
 export const cardSpace = (s: GameState, card: string) => s.board.find((x) => x.tile?.card === card);
 
 export const others = (s: GameState, pid: number) => s.players.filter((p) => p.id !== pid);
+
+/** Corporation and played cards that can hold resources (`rtype`, or any), optionally with a tag. */
+export function resCards(s: GameState, pid: number, rtype?: CardRes, tag?: Tag): string[] {
+  const p = P(s, pid);
+  const ids = p.corp ? [p.corp, ...p.played] : p.played;
+  return ids.filter((id) => {
+    const c = CARDS[id];
+    return c.type !== 'event' && !!c.resource && (!rtype || c.resource === rtype) && (!tag || c.tags.includes(tag));
+  });
+}
+/** Resources of a kind on a player's cards. */
+export const resOnCards = (s: GameState, pid: number, rtype: CardRes) => resCards(s, pid, rtype).reduce((a, id) => a + (P(s, pid).cardRes[id] ?? 0), 0);
+/** Whether `pid` holds `card` in play (corporation included). */
+export const inPlay = (s: GameState, pid: number, card: string) => P(s, pid).corp === card || P(s, pid).played.includes(card);
+/** Tags of a kind played by everyone. */
+export const allTags = (s: GameState, tag: Tag) => s.players.reduce((a, p) => a + tagCount(s, p.id, tag), 0);

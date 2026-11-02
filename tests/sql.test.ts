@@ -127,6 +127,14 @@ describe('online rooms in the database', () => {
     await as(HOST, `select regolith.leave_room($1)`, [r.r.id]);
   });
 
+  it('stores the expansions, keeping only known ones that are on', async () => {
+    const settings = { board: 'tharsis', expansions: { prelude: true, venus: false, colonies: true, turmoil: 'yes', moon: true } };
+    const [r] = await as<{ r: { id: string } }>(HOST, `select regolith.create_room($1::jsonb, true, $2::jsonb) as r`, [seats, JSON.stringify(settings)]);
+    const [row] = await as<{ settings: Record<string, unknown> }>(HOST, `select settings from regolith.rooms where id = $1`, [r.r.id]);
+    expect(row.settings).toEqual({ board: 'tharsis', expansions: { prelude: true, colonies: true } });
+    await as(HOST, `select regolith.leave_room($1)`, [r.r.id]);
+  });
+
   it('closes a lobby when its host leaves', async () => {
     const [r] = await as<{ r: { id: string } }>(HOST, `select regolith.create_room($1::jsonb, true) as r`, [seats]);
     await as(HOST, `select regolith.leave_room($1)`, [r.r.id]);

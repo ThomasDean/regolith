@@ -2,7 +2,9 @@
 // draw, or any mix with the players' own picks locked in).
 import { useMemo } from 'react';
 import { BOARD_IDS, BOARDS, type BoardId } from '../engine/board';
-import { AWARDS, MILESTONES, availability, boardMA, drawMA, maDef, selectionIssues, type MADef, type MASelection } from '../engine/ma';
+import { AWARDS, BALANCED, MILESTONES, availability, boardMA, drawMA, maDef, selectionIssues, type MADef, type MASelection } from '../engine/ma';
+import { EXPANSIONS, type Expansion, type Expansions } from '../engine/types';
+import { EXPANSION_LABEL } from './format';
 
 export interface MAState {
   sel: MASelection;
@@ -12,14 +14,34 @@ export interface MAState {
   mode: 'board' | 'custom';
 }
 
-export const initialMA = (board: BoardId): MAState => ({ sel: boardMA(board, Math.random), locked: [], mode: 'board' });
+export const initialMA = (board: BoardId, ex: Expansions = {}): MAState => ({ sel: boardMA(board, Math.random, ex), locked: [], mode: 'board' });
 
-/** Called when the map changes: the map's own set, or the current picks minus any the new map can't use. */
-export function maForBoard(st: MAState, board: BoardId): MAState {
-  if (st.mode === 'board') return initialMA(board);
-  const keep = (xs: string[]) => xs.map((id) => (availability(board, id) ? null : id));
-  const sel = drawMA(board, { milestones: keep(st.sel.milestones), awards: keep(st.sel.awards) }, Math.random);
-  return { ...st, sel, locked: st.locked.filter((id) => !availability(board, id)) };
+/** Called when the map or the expansions change: the map's own set, or the current picks minus any that can't be used now. */
+export function maForBoard(st: MAState, board: BoardId, ex: Expansions = {}): MAState {
+  if (st.mode === 'board') return initialMA(board, ex);
+  const keep = (xs: string[]) => xs.map((id) => (availability(board, id, ex) ? null : id));
+  const sel = drawMA(board, { milestones: keep(st.sel.milestones), awards: keep(st.sel.awards) }, Math.random, BALANCED, ex);
+  return { ...st, sel, locked: st.locked.filter((id) => !availability(board, id, ex)) };
+}
+
+const EXPANSION_BLURB: Record<Expansion, string> = {
+  prelude: 'Two prelude cards each to jump-start your engine, plus new corporations and cards.',
+  venus: 'The Venus track, floaters, Air Scrapping, and World Government Terraforming each generation.',
+  colonies: 'Colony tiles to settle and trade with, trade fleets, and the Build Colony project.',
+  turmoil: 'Six parties, delegates and a chairman, ruling bonuses and policies, and global events.',
+};
+
+export function ExpansionPicker({ ex, onChange, disabled }: { ex: Expansions; onChange: (ex: Expansions) => void; disabled?: boolean }) {
+  return (
+    <div className="exp-pick" role="group" aria-label="Expansions">
+      {EXPANSIONS.map((e) => (
+        <label key={e} className={`exp-opt ${ex[e] ? 'on' : ''}`}>
+          <input type="checkbox" checked={!!ex[e]} disabled={disabled} onChange={(ev) => onChange({ ...ex, [e]: ev.target.checked })} />
+          <span><b>{EXPANSION_LABEL[e]}</b><small>{EXPANSION_BLURB[e]}</small></span>
+        </label>
+      ))}
+    </div>
+  );
 }
 
 export function BoardPicker({ board, onChange }: { board: BoardId; onChange: (b: BoardId) => void }) {
@@ -47,7 +69,7 @@ const Lock = ({ on }: { on: boolean }) => (
   </svg>
 );
 
-function Slot({ kind, i, id, board, st, set }: { kind: 'milestones' | 'awards'; i: number; id: string; board: BoardId; st: MAState; set: (s: MAState) => void }) {
+function Slot({ kind, i, id, board, st, set, ex }: { kind: 'milestones' | 'awards'; i: number; id: string; board: BoardId; st: MAState; set: (s: MAState) => void; ex: Expansions }) {
   const def = maDef(id)!;
   const pool: MADef[] = kind === 'milestones' ? MILESTONES : AWARDS;
   const taken = new Set(st.sel[kind]);
@@ -65,14 +87,14 @@ function Slot({ kind, i, id, board, st, set }: { kind: 'milestones' | 'awards'; 
       <div className="ma-body">
         <label className="sr-only" htmlFor={`${kind}-${i}`}>{label}</label>
         <select id={`${kind}-${i}`} value={id} onChange={(e) => pick(e.target.value)}>
-          {BOARD_IDS.map((b) => {
-            const group = pool.filter((d) => d.boards.includes(b));
+          {[...BOARD_IDS, null].map((b) => {
+            const group = pool.filter((d) => (b ? d.boards.includes(b) : !d.boards.length));
             if (!group.length) return null;
             return (
-              <optgroup key={b} label={BOARDS[b].name}>
+              <optgroup key={b ?? 'more'} label={b ? BOARDS[b].name : 'Expansions'}>
                 {group.map((d) => {
-                  const why = availability(board, d.id);
-                  return <option key={d.id} value={d.id} disabled={(d.id !== id && taken.has(d.id)) || !!why}>{d.name}{why ? ' (no volcanoes here)' : ''}</option>;
+                  const why = availability(board, d.id, ex);
+                  return <option key={d.id} value={d.id} disabled={(d.id !== id && taken.has(d.id)) || !!why}>{d.name}{why ? ` (${why.startsWith('Needs') ? why.toLowerCase() : 'no volcanoes here'})` : ''}</option>;
                 })}
               </optgroup>
             );
@@ -84,11 +106,11 @@ function Slot({ kind, i, id, board, st, set }: { kind: 'milestones' | 'awards'; 
   );
 }
 
-export function MAPicker({ board, st, set }: { board: BoardId; st: MAState; set: (s: MAState) => void }) {
+export function MAPicker({ board, st, set, ex = {} }: { board: BoardId; st: MAState; set: (s: MAState) => void; ex?: Expansions }) {
   const issues = useMemo(() => selectionIssues(st.sel), [st.sel]);
   const shuffle = () => {
     const keep = (xs: string[]) => xs.map((id) => (st.locked.includes(id) ? id : null));
-    set({ ...st, sel: drawMA(board, { milestones: keep(st.sel.milestones), awards: keep(st.sel.awards) }, Math.random), mode: 'custom' });
+    set({ ...st, sel: drawMA(board, { milestones: keep(st.sel.milestones), awards: keep(st.sel.awards) }, Math.random, BALANCED, ex), mode: 'custom' });
   };
   const own = BOARDS[board];
   const isOwn = st.mode === 'board';
@@ -96,7 +118,7 @@ export function MAPicker({ board, st, set }: { board: BoardId; st: MAState; set:
   return (
     <div className="ma-pick">
       <div className="ma-tools">
-        <button type="button" className="btn small ghost" aria-pressed={isOwn} onClick={() => set(initialMA(board))}>{own.name}’s own</button>
+        <button type="button" className="btn small ghost" aria-pressed={isOwn} onClick={() => set(initialMA(board, ex))}>{own.name}’s own</button>
         <button type="button" className="btn small" onClick={shuffle}>{st.locked.length ? `Shuffle the other ${10 - st.locked.length}` : 'Shuffle all 10'}</button>
         {st.locked.length > 0 && <button type="button" className="btn small ghost" onClick={() => set({ ...st, locked: [] })}>Unlock all</button>}
       </div>
@@ -104,11 +126,11 @@ export function MAPicker({ board, st, set }: { board: BoardId; st: MAState; set:
       <div className="ma-cols">
         <div>
           <h3>Milestones <span className="muted">8 M€, first 3 claimed</span></h3>
-          <ol className="ma-list">{st.sel.milestones.map((id, i) => <Slot key={`m${i}`} kind="milestones" i={i} id={id} board={board} st={st} set={set} />)}</ol>
+          <ol className="ma-list">{st.sel.milestones.map((id, i) => <Slot key={`m${i}`} kind="milestones" i={i} id={id} board={board} st={st} set={set} ex={ex} />)}</ol>
         </div>
         <div>
           <h3>Awards <span className="muted">8/14/20 M€, 3 funded</span></h3>
-          <ol className="ma-list">{st.sel.awards.map((id, i) => <Slot key={`a${i}`} kind="awards" i={i} id={id} board={board} st={st} set={set} />)}</ol>
+          <ol className="ma-list">{st.sel.awards.map((id, i) => <Slot key={`a${i}`} kind="awards" i={i} id={id} board={board} st={st} set={set} ex={ex} />)}</ol>
         </div>
       </div>
       {!isOwn && issues.pairs.length > 0 && (

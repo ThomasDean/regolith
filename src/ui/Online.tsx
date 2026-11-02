@@ -10,7 +10,9 @@ import {
 import type { PlayReply, RoomRow, RoomSettings, SeatKind } from '../online/protocol';
 import { BOARD_IDS, BOARDS, type BoardId } from '../engine/board';
 import { maDef } from '../engine/ma';
-import { BoardPicker, initialMA, MAPicker, maForBoard, type MAState } from './Setup';
+import { BoardPicker, ExpansionPicker, initialMA, MAPicker, maForBoard, type MAState } from './Setup';
+import { EXPANSIONS } from '../engine/types';
+import { EXPANSION_LABEL } from './format';
 import { Game, type OnlineLink } from './Game';
 import { disablePush, enablePush, refreshBadge, usePushState } from '../pwa';
 import { LEVEL_LABEL, PLAYER_COLORS } from './format';
@@ -158,15 +160,17 @@ export function OnlineRoom({ id, onExit }: { id: string; onExit: () => void }) {
 /** The room's map and milestones/awards: a summary for guests, the setup pickers for the host. */
 function RoomSetup({ row, host, busy, save }: { row: RoomRow; host: boolean; busy: boolean; save: (st: RoomSettings) => void }) {
   const board = (BOARD_IDS.includes(row.settings?.board as BoardId) ? row.settings!.board : 'tharsis') as BoardId;
+  const ex = row.settings?.expansions ?? {};
   const [ma, setMA] = useState<MAState>(() => {
-    const own = initialMA(board);
+    const own = initialMA(board, ex);
     return row.settings?.milestones && row.settings.awards ? { sel: { milestones: row.settings.milestones, awards: row.settings.awards }, locked: [], mode: 'custom' } : own;
   });
   const names = (ids: string[] | undefined, fallback: string[]) => (ids ?? fallback).map((id) => maDef(id)?.name ?? id).join(', ');
-  const update = (b: BoardId, st: MAState) => { setMA(st); save({ board: b, milestones: st.sel.milestones, awards: st.sel.awards }); };
+  const update = (b: BoardId, st: MAState, nextEx = ex) => { setMA(st); save({ board: b, milestones: st.sel.milestones, awards: st.sel.awards, expansions: nextEx }); };
+  const on = EXPANSIONS.filter((e) => ex[e]).map((e) => EXPANSION_LABEL[e]);
   const summary = (
     <p className="muted">
-      <b>{BOARDS[board].name}</b>. Milestones: {names(row.settings?.milestones, ma.sel.milestones)}. Awards: {names(row.settings?.awards, ma.sel.awards)}.
+      <b>{BOARDS[board].name}</b>, {on.length ? `with ${on.join(', ')}` : 'no expansions'}. Milestones: {names(row.settings?.milestones, ma.sel.milestones)}. Awards: {names(row.settings?.awards, ma.sel.awards)}.
     </p>
   );
   if (!host) return summary;
@@ -174,8 +178,9 @@ function RoomSetup({ row, host, busy, save }: { row: RoomRow; host: boolean; bus
     <details className="room-setup">
       <summary>{summary}</summary>
       <fieldset disabled={busy} className="plain">
-        <BoardPicker board={board} onChange={(b) => update(b, maForBoard(ma, b))} />
-        <MAPicker board={board} st={ma} set={(st) => update(board, st)} />
+        <ExpansionPicker ex={ex} onChange={(next) => update(board, maForBoard(ma, board, next), next)} />
+        <BoardPicker board={board} onChange={(b) => update(b, maForBoard(ma, b, ex))} />
+        <MAPicker board={board} st={ma} set={(st) => update(board, st)} ex={ex} />
       </fieldset>
     </details>
   );
@@ -243,7 +248,7 @@ function Lobby({ row, uid, onExit }: { row: RoomRow; uid: string; onExit: () => 
         </ol>
         {host && <button type="button" className="btn ghost small" disabled={busy || row.seats.length >= 5} onClick={addSeat}>Add seat</button>}
 
-        <h2>Map, milestones and awards</h2>
+        <h2>Expansions, map, milestones and awards</h2>
         <RoomSetup row={row} host={host} busy={busy} save={(st) => run(() => updateRoom(row.id, seatsNow(), row.corporate_era, st))} />
 
         <h2>Options</h2>

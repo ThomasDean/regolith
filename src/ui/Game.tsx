@@ -2,14 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Action, GameState, Level, Payment, Prompt, StdProject } from '../engine/types';
 import { maxTemp } from '../engine/board';
 import { Analytics } from './Analytics';
-import { applyAction } from '../engine/game';
+import { applyAction, heatAvailable } from '../engine/game';
 import { CARDS } from '../engine/cards';
+import { inPlay } from '../engine/helpers';
 import { cpuAction } from '../engine/ai/cpu';
 import {
   activeCards, autoPay, availableSpaces, awardCost, gameAwards, awardPlaces, canClaimMilestone, canFundAward, canPlayCard, canSP,
   cardActionAvailable, cardCost, checkPayment, greeneryCost, maxSpend, MILESTONE_COST, gameMilestones, opsFeasible, payLimitsForCard,
-  requirementsMet, score, spCost, SP_NAME, steelValue, titaniumValue, type PayLimits,
+  requirementsMet, score, spCost, SP_NAME, steelValue, titaniumValue, type PayLimits, buyCost, spList, redsTax, payStock,
 } from '../engine/queries';
+import { ColoniesPanel, TurmoilPanel } from './Expansions';
 import { Board } from './Board';
 import { Card } from './Card';
 import { Dialog } from './Dialog';
@@ -282,6 +284,8 @@ export function Game({ initial, onExit, online }: { initial: GameState; onExit: 
 
         <aside className="side">
           <Players s={s} viewer={viewer} onView={setViewCards} queued={online?.queued} />
+          <ColoniesPanel s={s} viewer={viewer} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} act={act} />
+          <TurmoilPanel s={s} viewer={viewer} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} act={act} />
           <Log s={s} />
         </aside>
 
@@ -316,6 +320,7 @@ export function Game({ initial, onExit, online }: { initial: GameState; onExit: 
       )}
       {picking && !sending && s.phase === 'setup' && <SetupDialog s={s} pid={online ? viewer! : decider} act={act} />}
       {picking && !sending && s.phase === 'research' && !s.prompt && <ResearchDialog s={s} pid={online ? viewer! : decider} act={act} />}
+      {canAct && s.phase === 'prelude' && !s.prompt && !s.pendingAction && <PreludeDialog s={s} pid={decider} act={act} />}
       {seatsOpen && online && <SeatsDialog s={s} online={online} onClose={() => setSeatsOpen(false)} />}
       {pr && pr.kind !== 'space' && <PromptDialog s={s} pr={pr} act={act} />}
       {openCard && me && <CardDialog s={s} pid={me.id} id={openCard} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} onClose={() => setOpenCard(null)} act={(a) => { setOpenCard(null); act(a); }} />}
@@ -345,6 +350,7 @@ function Status({ s, viewer, online }: { s: GameState; viewer: number | null; on
   if (s.phase === 'over') text = 'Game over';
   else if (s.phase === 'setup') text = `${d.name} is choosing a corporation`;
   else if (s.phase === 'research') text = `${d.name} is buying research cards`;
+  else if (s.phase === 'prelude') text = `${d.name} is playing preludes`;
   else if (s.phase === 'finalGreenery') text = `${d.name} is placing final greeneries`;
   else text = `${d.name}'s turn`;
   if (d.cpu && s.phase !== 'over') text += '…';
@@ -407,10 +413,12 @@ function Hand({ s, pid, onOpen, canAct }: { s: GameState; pid: number; onOpen: (
 // ---------------- payment ----------------
 function PayControl({ s, pid, cost, lim, pay, setPay }: { s: GameState; pid: number; cost: number; lim: PayLimits; pay: Payment; setPay: (p: Payment) => void }) {
   const p = s.players[pid];
-  const rows: { key: 'steel' | 'titanium' | 'heat'; label: string; unit: number; have: number }[] = [];
+  const rows: { key: 'steel' | 'titanium' | 'heat' | 'floaters' | 'microbes'; label: string; unit: number; have: number }[] = [];
   if (lim.steel && p.res.steel) rows.push({ key: 'steel', label: 'Steel', unit: steelValue(s, pid), have: p.res.steel });
   if (lim.titanium && p.res.titanium) rows.push({ key: 'titanium', label: 'Titanium', unit: titaniumValue(s, pid), have: p.res.titanium });
   if (lim.heat && p.res.heat) rows.push({ key: 'heat', label: 'Heat', unit: 1, have: p.res.heat });
+  if (lim.floaters && payStock(s, pid, 'floaters')) rows.push({ key: 'floaters', label: 'Floaters on Dirigibles', unit: 3, have: payStock(s, pid, 'floaters') });
+  if (lim.microbes && payStock(s, pid, 'microbes')) rows.push({ key: 'microbes', label: 'Microbes on Psychrophiles', unit: 2, have: payStock(s, pid, 'microbes') });
   const mc = checkPayment(s, pid, cost, pay, lim);
   if (!rows.length) return null;
   return (
@@ -451,9 +459,9 @@ function CardDialog({ s, pid, id, canAct, onClose, act }: { s: GameState; pid: n
 }
 
 // ---------------- action bar ----------------
-const SPS: StdProject[] = ['power', 'asteroid', 'aquifer', 'greenery', 'city'];
 const SP_EFFECT: Record<StdProject, string> = {
   sell: 'Discard cards for 1 M€ each', power: '+1 energy production', asteroid: 'Raise temperature', aquifer: 'Place an ocean', greenery: 'Place a greenery', city: 'Place a city, +1 M€ production',
+  venus: 'Raise Venus 1 step', colony: 'Place a colony',
 };
 
 function ActionBar({ s, pid, myTurn, act, panel, setPanel }: { s: GameState; pid: number; myTurn: boolean; act: (a: Action) => void; panel: string | null; setPanel: (p: null | 'projects' | 'sell' | 'confirmPass') => void }) {
@@ -468,14 +476,15 @@ function ActionBar({ s, pid, myTurn, act, panel, setPanel }: { s: GameState; pid
         <button type="button" className="btn small" disabled={!myTurn || p.res.plants < greeneryCost(s, pid) || !availableSpaces(s, pid, 'greenery', 'greenery').length} onClick={() => act({ t: 'plants' })}>
           {greeneryCost(s, pid)} plants → greenery
         </button>
-        <button type="button" className="btn small" disabled={!myTurn || p.res.heat < 8 || s.temperature >= maxTemp(s)} onClick={() => act({ t: 'heat' })}>
+        <button type="button" className="btn small" disabled={!myTurn || heatAvailable(s, pid) < 8 || s.temperature >= maxTemp(s) || p.res.mc < redsTax(s, 1)} onClick={() => act({ t: 'heat' })}>
           8 heat → {fmtTemp(Math.min(maxTemp(s), s.temperature + 2))}
         </button>
+        {s.turmoil?.ruling === 'reds' && <span className="chip-note warn">Reds rule: 3 M€ per TR you raise</span>}
       </div>
       <div className="ab-group">
         <h3>Standard projects</h3>
         <div className="chips">
-          {SPS.map((id) => (
+          {spList(s).map((id) => (
             <button key={id} type="button" className="btn small" disabled={!myTurn || !canSP(s, pid, id)} title={SP_EFFECT[id]} onClick={() => act({ t: 'sp', id, pay: payHelion(spCost(s, pid, id)) })}>
               {SP_NAME[id]} <b>{spCost(s, pid, id)}</b>
             </button>
@@ -565,21 +574,33 @@ function SetupDialog({ s, pid, act }: { s: GameState; pid: number; act: (a: Acti
   const su = p.setup!;
   const [corp, setCorp] = useState(su.corps[0]);
   const [keep, setKeep] = useState<string[]>([]);
+  const [pre, setPre] = useState<string[]>([]);
   const beginner = corp === 'beginner-corporation';
   const start = CARDS[corp].startMC!;
-  const cost = beginner ? 0 : keep.length * 3;
+  const price = corp === 'polyphemos' ? 5 : corp === 'terralabs-research' ? 1 : 3;
+  const cost = beginner ? 0 : keep.length * price;
   const toggle = (id: string) => setKeep((x) => (x.includes(id) ? x.filter((y) => y !== id) : [...x, id]));
+  const togglePre = (id: string) => setPre((x) => (x.includes(id) ? x.filter((y) => y !== id) : x.length >= 2 ? [x[1], id] : [...x, id]));
+  const needPre = !!su.preludes && pre.length !== 2;
   return (
     <Dialog title={`${p.name}: found your corporation`} wide
       footer={<>
-        <span className={cost > start ? 'warn' : 'muted'}>{beginner ? 'All 10 cards are free with the beginner corporation.' : `${keep.length} cards cost ${cost} M€, leaving ${start - cost} M€.`}</span>
-        <button type="button" className="btn" disabled={cost > start} onClick={() => act({ t: 'setup', corp, keep: beginner ? [] : keep })}>Start with {CARDS[corp].name}</button>
+        <span className={cost > start || needPre ? 'warn' : 'muted'}>{needPre ? `Choose 2 preludes (${pre.length} chosen). ` : ''}{beginner ? 'All 10 cards are free with the beginner corporation.' : `${keep.length} cards cost ${cost} M€, leaving ${start - cost} M€.`}</span>
+        <button type="button" className="btn" disabled={cost > start || needPre} onClick={() => act({ t: 'setup', corp, keep: beginner ? [] : keep, ...(su.preludes ? { preludes: pre } : {}) })}>Start with {CARDS[corp].name}</button>
       </>}>
       <h3>Corporation</h3>
       <div className="pick-grid corps">
         {su.corps.map((c, i) => <Card key={c} id={c} index={i} selected={corp === c} onClick={() => setCorp(c)} />)}
       </div>
-      <h3>Starting cards {beginner ? '' : <span className="muted">3 M€ each</span>}</h3>
+      {su.preludes && (
+        <>
+          <h3>Preludes <span className="muted">keep 2; both are played before the first generation</span></h3>
+          <div className="pick-grid">
+            {su.preludes.map((c, i) => <Card key={c} id={c} index={i + 2} selected={pre.includes(c)} onClick={() => togglePre(c)} />)}
+          </div>
+        </>
+      )}
+      <h3>Starting cards {beginner ? '' : <span className="muted">{price} M€ each</span>}</h3>
       <div className="pick-grid">
         {su.cards.map((id, i) => <Card key={id} id={id} index={i + 2} selected={beginner || keep.includes(id)} onClick={beginner ? undefined : () => toggle(id)} />)}
       </div>
@@ -591,20 +612,38 @@ function ResearchDialog({ s, pid, act }: { s: GameState; pid: number; act: (a: A
   const p = s.players[pid];
   const [keep, setKeep] = useState<string[]>([]);
   const toggle = (id: string) => setKeep((x) => (x.includes(id) ? x.filter((y) => y !== id) : [...x, id]));
-  const cost = keep.length * 3;
+  const price = buyCost(s, pid);
+  const cost = keep.length * price;
   return (
     <Dialog title={`${p.name}: research for generation ${s.generation}`} wide
       footer={<>
         <span className={cost > p.res.mc ? 'warn' : 'muted'}>{cost} M€ of your {p.res.mc} M€</span>
         <button type="button" className="btn" disabled={cost > p.res.mc} onClick={() => act({ t: 'research', keep })}>{keep.length ? `Buy ${keep.length}` : 'Buy none'}</button>
       </>}>
-      <p>Buy any of these cards for 3 M€ each. The rest are discarded.</p>
+      <p>Buy any of these cards for {price} M€ each. The rest are discarded.</p>
       <div className="pick-grid">
         {(p.research ?? []).map((id, i) => <Card key={id} id={id} s={s} pid={pid} index={i} selected={keep.includes(id)} onClick={() => toggle(id)} />)}
       </div>
       <details className="hand-peek"><summary>Your hand ({p.hand.length})</summary>
         <div className="pick-grid">{p.hand.map((id) => <Card key={id} id={id} s={s} pid={pid} compact />)}</div>
       </details>
+    </Dialog>
+  );
+}
+
+function PreludeDialog({ s, pid, act }: { s: GameState; pid: number; act: (a: Action) => void }) {
+  const p = s.players[pid];
+  return (
+    <Dialog title={`${p.name}: play your preludes`} wide>
+      <p>Play them in either order. One that can’t be played in full is swapped for 15 M€.</p>
+      <div className="pick-grid">
+        {(p.preludes ?? []).map((id, i) => <Card key={id} id={id} s={s} pid={pid} index={i} onClick={() => act({ t: 'prelude', card: id })} />)}
+      </div>
+      {p.hand.length > 0 && (
+        <details className="hand-peek"><summary>Your hand ({p.hand.length})</summary>
+          <div className="pick-grid">{p.hand.map((id) => <Card key={id} id={id} s={s} pid={pid} compact />)}</div>
+        </details>
+      )}
     </Dialog>
   );
 }
@@ -636,8 +675,9 @@ function PromptDialog({ s, pr, act }: { s: GameState; pr: Prompt; act: (a: Actio
         <Dialog title={pr.title} wide>
           <div className="pick-grid">
             {pr.options.map((id) => {
-              const owner = s.players.find((q) => q.played.includes(id));
-              return <Card key={id} id={id} resources={owner?.cardRes[id] ?? 0} onClick={() => act({ t: 'answer', card: id })} footer={owner && owner.id !== pr.pid ? <div className="card-owner" style={{ color: owner.color }}>{owner.name}</div> : undefined} />;
+              const owner = s.players.find((q) => inPlay(s, q.id, id));
+              if (!owner) return <Card key={id} id={id} s={s} pid={pr.pid} onClick={() => act({ t: 'answer', card: id })} />;
+              return <Card key={id} id={id} resources={owner.cardRes[id] ?? 0} onClick={() => act({ t: 'answer', card: id })} footer={owner.id !== pr.pid ? <div className="card-owner" style={{ color: owner.color }}>{owner.name}</div> : undefined} />;
             })}
           </div>
           {pr.optional && <button type="button" className="btn ghost" onClick={() => act({ t: 'answer', card: null })}>Skip</button>}
@@ -716,7 +756,7 @@ function TableauDialog({ s, pid, onClose }: { s: GameState; pid: number; onClose
   return (
     <Dialog title={`${p.name}: cards in play`} onClose={onClose} wide>
       <div className="pick-grid">
-        {p.corp && <Card id={p.corp} />}
+        {p.corp && <Card id={p.corp} resources={p.cardRes[p.corp]} />}
         {cards.map((id) => <Card key={id} id={id} s={s} pid={pid} resources={p.cardRes[id]} compact={CARDS[id].type === 'event'} />)}
       </div>
       <label className="check"><input type="checkbox" checked={showEvents} onChange={(e) => setShowEvents(e.target.checked)} /> Show played events ({p.played.filter((id) => CARDS[id].type === 'event').length})</label>

@@ -6,11 +6,13 @@
 // as their profiles overlap: Gardener and Cultivator both reward greeneries (overlap 1, conflict
 // 9), Mayor and Landlord share tiles and cities (5), Builder and Scientist share nothing (0).
 // Random draws keep every pair at or below a threshold and spread the ten across kinds of play.
-import type { CardRes, GameState, Res, Space, Tag } from './types';
+import type { CardRes, Expansion, Expansions, GameState, Res, Space, Tag } from './types';
 import { RESOURCES, TAGS } from './types';
 import { CARDS } from './cards';
 import { BOARDS, boardRows, neighbours, type BoardId } from './board';
-import { cities, eventsPlayed, greeneries, marsTiles, P, tagCount } from './helpers';
+import { cities, eventsPlayed, greeneries, marsTiles, P, resOnCards, tagCount } from './helpers';
+import { colonyCount } from './colonies';
+import { delegatesOut } from './turmoil';
 
 export type Family = 'tiles' | 'tags' | 'cards' | 'production' | 'resources' | 'tr';
 
@@ -26,6 +28,8 @@ interface Base {
   boards: BoardId[];
   /** can't be used on this board (Geologist without volcanoes) */
   unavailable?: (b: BoardId) => string | null;
+  /** needs this expansion */
+  needs?: Expansion;
 }
 export interface Milestone extends Base { kind: 'milestone'; need: number }
 export interface Award extends Base {
@@ -48,7 +52,7 @@ const projects = (s: GameState, pid: number) => P(s, pid).played.filter((id) => 
 const resOn = (s: GameState, pid: number, types?: CardRes[]) => {
   const p = P(s, pid);
   let n = 0;
-  for (const id of p.played) {
+  for (const id of p.corp ? [p.corp, ...p.played] : p.played) {
     const r = CARDS[id].resource;
     if (r && (!types || types.includes(r))) n += p.cardRes[id] ?? 0;
   }
@@ -56,10 +60,10 @@ const resOn = (s: GameState, pid: number, types?: CardRes[]) => {
 };
 const resTypes = (s: GameState, pid: number) => {
   const p = P(s, pid);
-  return new Set(p.played.filter((id) => CARDS[id].resource && (p.cardRes[id] ?? 0) > 0).map((id) => CARDS[id].resource)).size;
+  return new Set((p.corp ? [p.corp, ...p.played] : p.played).filter((id) => CARDS[id].resource && (p.cardRes[id] ?? 0) > 0).map((id) => CARDS[id].resource)).size;
 };
 const withReq = (s: GameState, pid: number) => P(s, pid).played.filter((id) => CARDS[id].type !== 'event' && CARDS[id].req).length;
-const distinctTags = (s: GameState, pid: number) => TAGS.filter((t) => t !== 'event' && tagCount(s, pid, t) > 0).length;
+const distinctTags = (s: GameState, pid: number) => TAGS.filter((t) => t !== 'event' && t !== 'wild' && tagCount(s, pid, t) > 0).length + Math.min(1, tagCount(s, pid, 'wild'));
 const tags = (s: GameState, pid: number, ts: Tag[]) => ts.reduce((a, t) => a + tagCount(s, pid, t), 0);
 const prod = (s: GameState, pid: number, rs: Res[]) => rs.reduce((a, r) => a + P(s, pid).prod[r], 0);
 function largestGroup(s: GameState, pid: number): number {
@@ -132,6 +136,12 @@ export const MILESTONES: Milestone[] = [
   M('geologist', 'Geologist', '3 tiles on or next to volcanic areas', 3, 'tiles', { 'tile.volcanic': 0.6, tile: 0.4 }, ['vastitas'],
     (s, pid) => realTiles(s, pid).filter((x) => x.volcanic || neighbours(s.board, x.id).some((n) => n.volcanic)).length, { unavailable: noVolcanoes }),
   M('farmer', 'Farmer', '5 animals and microbes on your cards', 5, 'resources', { 'res.animal': 0.35, 'res.microbe': 0.35, 'res.card': 0.3 }, ['vastitas'], (s, pid) => resOn(s, pid, ['animal', 'microbe'])),
+  // need expansions
+  M('pioneer', 'Pioneer', '4 colonies', 4, 'tiles', { colony: 1 }, ['utopia'], (s, pid) => colonyCount(s, pid), { needs: 'colonies' }),
+  M('planetologist', 'Planetologist', '2 Earth, 2 Venus and 2 Jovian tags', 6, 'tags', { 'tag.venus': 0.4, 'tag.earth': 0.3, 'tag.jovian': 0.3 }, ['cimmeria'],
+    (s, pid) => Math.min(6, (['earth', 'venus', 'jovian'] as Tag[]).reduce((a, t) => a + Math.min(2, tagCount(s, pid, t)), 0) + tagCount(s, pid, 'wild')), { needs: 'venus' }),
+  M('lobbyist', 'Lobbyist', 'All 7 delegates out of your reserve', 7, 'tr', { delegate: 1 }, ['amazonis'], (s, pid) => delegatesOut(s, pid), { needs: 'turmoil' }),
+  M('hoverlord', 'Hoverlord', '7 floaters on your cards', 7, 'resources', { 'res.floater': 0.8, 'res.card': 0.2 }, [], (s, pid) => resOnCards(s, pid, 'floater'), { needs: 'venus' }),
 ];
 
 export const AWARDS: Award[] = [
@@ -179,7 +189,7 @@ export const AWARDS: Award[] = [
   A('collector', 'Collector', 'Most different kinds of resource, in stock and on cards', 'resources', { 'res.std': 0.5, 'res.cardtypes': 0.5 }, ['amazonis'], { sd: 0.9, widen: 0 },
     (s, pid) => RESOURCES.filter((r) => P(s, pid).res[r] > 0).length + resTypes(s, pid)),
   A('innovator', 'Innovator', 'Most cards played, events included', 'cards', { 'card.count': 0.8, 'card.event': 0.2 }, ['amazonis'], { sd: 2.0, widen: 0.04 }, (s, pid) => P(s, pid).played.length),
-  A('constructor', 'Constructor', 'Most cities (and colonies, with Colonies)', 'tiles', { 'tile.city': 0.6, tile: 0.4 }, ['amazonis'], { sd: 0.8, widen: 0.04 }, (s, pid) => cities(s, { pid }).length),
+  A('constructor', 'Constructor', 'Most cities (and colonies, with Colonies)', 'tiles', { 'tile.city': 0.6, tile: 0.4 }, ['amazonis'], { sd: 0.8, widen: 0.04 }, (s, pid) => cities(s, { pid }).length + colonyCount(s, pid)),
   A('manufacturer', 'Manufacturer', 'Highest steel and heat production combined', 'production', { 'prod.steel': 0.5, 'prod.heat': 0.5 }, ['amazonis'], { sd: 1.0, widen: 0.04 }, (s, pid) => prod(s, pid, ['steel', 'heat'])),
   A('physicist', 'Physicist', 'Most science and space tags combined', 'tags', { 'tag.science': 0.5, 'tag.space': 0.5 }, ['amazonis'], { sd: 1.1, widen: 0.03 }, (s, pid) => tags(s, pid, ['science', 'space'])),
   // Vastitas Borealis
@@ -188,6 +198,8 @@ export const AWARDS: Award[] = [
   A('highlander', 'Highlander', 'Most tiles not next to oceans', 'tiles', { 'tile.inland': 0.6, tile: 0.4 }, ['vastitas'], { sd: 1.05, widen: 0.05 }, (s, pid) => realTiles(s, pid).filter((x) => !adjOcean(s, x)).length),
   A('promoter', 'Promoter', 'Most events played', 'cards', { 'card.event': 1 }, ['vastitas'], { sd: 0.7, widen: 0.04 }, eventsPlayed),
   A('blacksmith', 'Blacksmith', 'Highest steel and titanium production combined', 'production', { 'prod.steel': 0.5, 'prod.titanium': 0.5 }, ['vastitas'], { sd: 0.5, widen: 0.04 }, (s, pid) => prod(s, pid, ['steel', 'titanium'])),
+  // Venus Next
+  A('venuphile', 'Venuphile', 'Most Venus tags', 'tags', { 'tag.venus': 1 }, [], { sd: 0.6, widen: 0.03 }, (s, pid) => tagCount(s, pid, 'venus'), { needs: 'venus' }),
 ];
 
 export const MILESTONE_COST = 8;
@@ -195,8 +207,8 @@ export const MILESTONE_COST = 8;
 /** Milestones and awards that count tags, and which (CPUs value those tags while the race is on). */
 const TAG_RACE_LIST: [string, Tag[]][] = Object.entries({
   builder: ['building'], 'rim-settler': ['jovian'], ecologist: ['plant', 'microbe', 'animal'], researcher: ['science'], architect: ['city'],
-  terran: ['earth'], agronomist: ['plant'], spacefarer: ['space'],
-  scientist: ['science'], 'space-baron': ['space'], contractor: ['building'], investor: ['earth'], electrician: ['power'], physicist: ['science', 'space'], traveller: ['jovian', 'earth'],
+  terran: ['earth'], agronomist: ['plant'], spacefarer: ['space'], planetologist: ['earth', 'venus', 'jovian'],
+  scientist: ['science'], venuphile: ['venus'], 'space-baron': ['space'], contractor: ['building'], investor: ['earth'], electrician: ['power'], physicist: ['science', 'space'], traveller: ['jovian', 'earth'],
 } as Record<string, Tag[]>);
 // a Map, not an object: ids like 'constructor' must not hit Object.prototype
 const TAG_RACES = new Map(TAG_RACE_LIST);
@@ -233,9 +245,13 @@ export interface DrawRules {
 }
 export const BALANCED: DrawRules = { maxPair: 4, maxTotal: 22, maxFamily: 3, maxFamilySide: 2 };
 
-/** Ids that can be picked on this board, and why the others can't. */
-export function availability(board: BoardId, id: string): string | null {
-  return maDef(id)?.unavailable?.(board) ?? null;
+const EX_NAME: Record<Expansion, string> = { prelude: 'Prelude', venus: 'Venus Next', colonies: 'Colonies', turmoil: 'Turmoil' };
+
+/** Ids that can be picked on this board with these expansions, and why the others can't. */
+export function availability(board: BoardId, id: string, ex: Expansions = {}): string | null {
+  const d = maDef(id);
+  if (d?.needs && !ex[d.needs]) return `Needs ${EX_NAME[d.needs]}`;
+  return d?.unavailable?.(board) ?? null;
 }
 
 export interface MASelection { milestones: string[]; awards: string[] }
@@ -269,9 +285,9 @@ export function selectionIssues(sel: MASelection, rules: DrawRules = BALANCED): 
  * Filled slots are kept even if they clash (the players chose them). Deterministic for a
  * given random source. Rules are relaxed step by step if a draw can't satisfy them.
  */
-export function drawMA(board: BoardId, slots: Slots, rand: () => number, rules: DrawRules = BALANCED): MASelection {
+export function drawMA(board: BoardId, slots: Slots, rand: () => number, rules: DrawRules = BALANCED, ex: Expansions = {}): MASelection {
   const fixed = [...slots.milestones, ...slots.awards].filter((x): x is string => !!x);
-  const pool = (defs: MADef[]) => defs.filter((d) => !fixed.includes(d.id) && !availability(board, d.id)).map((d) => d.id);
+  const pool = (defs: MADef[]) => defs.filter((d) => !fixed.includes(d.id) && !availability(board, d.id, ex)).map((d) => d.id);
   const relax = [rules, { ...rules, maxTotal: rules.maxTotal + 6 }, { ...rules, maxPair: rules.maxPair + 1, maxTotal: rules.maxTotal + 8, maxFamily: rules.maxFamily + 1 },
     { maxPair: 9, maxTotal: 999, maxFamily: 10, maxFamilySide: 5 }];
   for (const r of relax) {
@@ -342,10 +358,11 @@ function fits(ms: (string | null)[], as: (string | null)[], fixed: Set<string>, 
  * The board's own set, with slots for milestones/awards that need missing expansions
  * filled by a balanced draw.
  */
-export function boardMA(board: BoardId, rand: () => number): MASelection {
+export function boardMA(board: BoardId, rand: () => number, ex: Expansions = {}): MASelection {
   const b = BOARDS[board];
-  const pad = (xs: string[]) => [...xs, ...Array(5 - xs.length).fill(null)];
-  return drawMA(board, { milestones: pad(b.milestones), awards: pad(b.awards) }, rand);
+  // milestones that need a missing expansion leave a slot for a balanced draw
+  const pad = (xs: string[]) => { const kept = xs.map((id) => (availability(board, id, ex) ? null : id)); return [...kept, ...Array(Math.max(0, 5 - kept.length)).fill(null)]; };
+  return drawMA(board, { milestones: pad(b.milestones), awards: pad(b.awards) }, rand, BALANCED, ex);
 }
 
 /** Small seeded generator for setup draws (separate from the game's own random stream). */

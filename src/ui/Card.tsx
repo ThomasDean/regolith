@@ -22,14 +22,16 @@ interface Props {
   still?: boolean;
 }
 
-const TYPE_LABEL = { automated: 'Automated', active: 'Active', event: 'Event', corp: 'Corporation' } as const;
+const TYPE_LABEL = { automated: 'Automated', active: 'Active', event: 'Event', corp: 'Corporation', prelude: 'Prelude' } as const;
+const SET_LABEL: Partial<Record<string, string>> = { prelude: 'Prelude', venus: 'Venus Next', colonies: 'Colonies', turmoil: 'Turmoil' };
 
 const finePointer = typeof window !== 'undefined' && window.matchMedia?.('(hover: hover) and (pointer: fine)').matches;
 
 export function Card({ id, s, pid, resources, compact, selected, dim, onClick, footer, index, still }: Props) {
   const c = CARDS[id];
   const ref = useRef<HTMLElement>(null);
-  const cost = s && pid !== undefined && c.type !== 'corp' ? cardCost(s, pid, id) : c.cost;
+  const free = c.type === 'corp' || c.type === 'prelude';
+  const cost = s && pid !== undefined && !free ? cardCost(s, pid, id) : c.cost;
   const req = reqText(c.req);
   const reqOk = s && pid !== undefined ? requirementsMet(s, pid, id) : true;
   const vp = c.vp === undefined ? null : typeof c.vp === 'number' ? String(c.vp) : s && pid !== undefined && s.players[pid].played.includes(id) ? `${cardVP(s, pid, id)}*` : '*';
@@ -65,7 +67,7 @@ export function Card({ id, s, pid, resources, compact, selected, dim, onClick, f
     >
       <div className="card-art">
         <CardArt card={c} />
-        {c.type !== 'corp' && (
+        {!free && (
           <span className={`card-cost ${cost < c.cost ? 'discounted' : ''}`} title={cost < c.cost ? `Printed cost ${c.cost}` : 'Cost'}>{cost}</span>
         )}
         {c.tags.length > 0 && (
@@ -78,7 +80,7 @@ export function Card({ id, s, pid, resources, compact, selected, dim, onClick, f
       </div>
       <div className="card-title">
         <span className="card-name">{c.name}</span>
-        <span className="card-type">{TYPE_LABEL[c.type]}</span>
+        <span className="card-type">{TYPE_LABEL[c.type]}{SET_LABEL[c.set] && c.type !== 'prelude' ? <span className="card-set"> · {SET_LABEL[c.set]}</span> : null}</span>
       </div>
       {!compact && (
         <div className="card-body">

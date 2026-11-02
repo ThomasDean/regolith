@@ -12,7 +12,12 @@ import { onlineEnabled } from '../online/client';
 import { roomFromUrl, usePwa } from '../pwa';
 import { PLAYER_COLORS, PLAYER_COLOR_NAMES } from './format';
 import type { BoardId } from '../engine/board';
-import { BoardPicker, initialMA, MAPicker, maForBoard, type MAState } from './Setup';
+import { BoardPicker, ExpansionPicker, initialMA, MAPicker, maForBoard, type MAState } from './Setup';
+import type { Expansions } from '../engine/types';
+
+const EX_KEY = 'regolith-expansions';
+const loadEx = (): Expansions => { try { return JSON.parse(localStorage.getItem(EX_KEY) ?? '{}') as Expansions; } catch { return {}; } };
+const saveEx = (ex: Expansions) => { try { localStorage.setItem(EX_KEY, JSON.stringify(ex)); } catch { /* storage unavailable */ } };
 
 type Seat = { name: string; kind: 'human' | Level; color: string };
 
@@ -53,10 +58,12 @@ function Menu({ saved, onStart, onOnline, onGallery }: { saved: GameState | null
   const [corporateEra, setCorporateEra] = useState(true);
   const [seed, setSeed] = useState('');
   const [board, setBoard] = useState<BoardId>('tharsis');
-  const [ma, setMA] = useState<MAState>(() => initialMA('tharsis'));
-  const chooseBoard = (b: BoardId) => { setBoard(b); setMA((m) => maForBoard(m, b)); };
+  const [ex, setEx] = useState<Expansions>(loadEx);
+  const [ma, setMA] = useState<MAState>(() => initialMA('tharsis', ex));
+  const chooseBoard = (b: BoardId) => { setBoard(b); setMA((m) => maForBoard(m, b, ex)); };
+  const chooseEx = (next: Expansions) => { setEx(next); saveEx(next); setMA((m) => maForBoard(m, board, next)); };
   const preview = useMemo(() => createGame([{ name: 'a', color: '#000', cpu: null }, { name: 'b', color: '#000', cpu: null }], { seed: 1, board }), [board]);
-  const settings = { board, milestones: ma.sel.milestones, awards: ma.sel.awards };
+  const settings = { board, milestones: ma.sel.milestones, awards: ma.sel.awards, expansions: ex };
   const update = (i: number, patch: Partial<Seat>) => setSeats((x) => x.map((s, j) => (j === i ? { ...s, ...patch } : s)));
   const addSeat = () => setSeats((x) => {
     const color = PLAYER_COLORS.find((c) => !x.some((s) => s.color === c))!;
@@ -121,11 +128,14 @@ function Menu({ saved, onStart, onOnline, onGallery }: { saved: GameState | null
           <p><b>Easy</b> plays loosely and ignores you. <b>Normal</b> builds around its tags and discounts. <b>Hard</b> also watches the leader, races milestones and awards, and plans two actions ahead.</p>
         </div>
 
+        <h2>Expansions</h2>
+        <ExpansionPicker ex={ex} onChange={chooseEx} />
+
         <h2>Map</h2>
         <BoardPicker board={board} onChange={chooseBoard} />
 
         <h2>Milestones and awards</h2>
-        <MAPicker board={board} st={ma} set={setMA} />
+        <MAPicker board={board} st={ma} set={setMA} ex={ex} />
 
         <h2>Options</h2>
         <label className="check"><input type="checkbox" checked={corporateEra} onChange={(e) => setCorporateEra(e.target.checked)} /> Corporate Era cards and corporations (recommended)</label>
