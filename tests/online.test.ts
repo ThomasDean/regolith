@@ -164,6 +164,23 @@ describe('online referee', () => {
     expect(back.room.seats[1].kind).toBe('human');
   });
 
+  it('lets a player forfeit: a CPU takes the seat for good, and the game ends when one player is left', async () => {
+    const store = new MemStore();
+    makeRoom(store, [human(0), human(1), human(2)]);
+    await handle({ op: 'start', room: ID }, 'u0', store);
+    const r = await handle({ op: 'forfeit', room: ID }, 'u2', store);
+    expect(r.room.status).toBe('playing');
+    expect(r.room.seats[2]).toMatchObject({ kind: 'normal', forfeited: true });
+    expect(store.rooms.get(ID)!.state!.players[2]).toMatchObject({ cpu: 'normal', forfeited: true });
+    await expect(handle({ op: 'forfeit', room: ID }, 'u2', store)).rejects.toThrow(/already forfeited/);
+    await expect(handle({ op: 'seat', room: ID, seat: 2, kind: 'human' }, 'u0', store)).rejects.toThrow(/forfeited/);
+    await expect(handle({ op: 'act', room: ID, action: { t: 'pass' } }, 'u2', store)).rejects.toThrow(/You forfeited/);
+    await handle({ op: 'forfeit', room: ID }, 'u1', store);
+    const over = store.rooms.get(ID)!;
+    expect(over.room.status).toBe('over');
+    expect(over.state!.endedBy).toBe('forfeit');
+  });
+
   it('ignores a stale advance', async () => {
     const store = new MemStore();
     makeRoom(store, [human(0), cpu(1)]);

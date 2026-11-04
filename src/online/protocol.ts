@@ -3,7 +3,14 @@ import type { Action, Expansions, GameState, Level } from '../engine/types';
 
 export type SeatKind = 'human' | 'open' | Level;
 
-export interface SeatRow { kind: SeatKind; name: string; color: string; user: string | null }
+export interface SeatRow {
+  kind: SeatKind;
+  name: string;
+  color: string;
+  user: string | null;
+  /** the player gave up; a CPU plays the seat out and it ranks last */
+  forfeited?: boolean;
+}
 
 /** Map, milestone/award and expansion choice for an online game (absent: Tharsis with its own set, no expansions). */
 export interface RoomSettings { board?: string; milestones?: string[]; awards?: string[]; expansions?: Expansions }
@@ -32,7 +39,9 @@ export type PlayRequest =
   | { op: 'start'; room: string }
   | { op: 'act'; room: string; action: Action }
   | { op: 'advance'; room: string; version: number }
-  | { op: 'seat'; room: string; seat: number; kind: 'human' | Level };
+  | { op: 'seat'; room: string; seat: number; kind: 'human' | Level }
+  /** give up your seat: a CPU plays it out and it ranks last */
+  | { op: 'forfeit'; room: string };
 
 /** Asks the server for the public key a browser needs to subscribe to push (null: push isn't set up). */
 export interface PushKeyRequest { op: 'push-key' }

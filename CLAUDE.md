@@ -2,9 +2,11 @@
 
 See `README.md` for what the project is, how to run it, and deploy/auth setup.
 
-## Future design: expanding to multiple board games
+## Multiple board games
 
-Not implemented yet. Follow this when more games (e.g. Cities & Knights) are added. Until then, don't restructure the repo preemptively, but don't make choices that block this path.
+The site is now a hub with two games: Regolith (`/regolith`, code in `src/engine`, `src/ui`, `src/online`) and Fathom (`/fathom`, `src/fathom/engine` + `src/fathom/ui`). Shared pieces live in `src/shell/`: path routing (`route.ts`), the hub (`Home.tsx`), local saves for any game (`localSaves.ts`), the cross-game "your games" list and next-game logic (`active.ts`, `NextGame.tsx`), the forfeit dialog (`Forfeit.tsx`) and the game list (`gameInfo.ts`). Each game is lazy-loaded from `Root.tsx`. To add a game: an engine folder, a UI with its own app component, a `localStore` for saves, an entry in `gameInfo.ts`, `Root.tsx`, `active.ts` (`LOCAL`) and the service worker's app paths.
+
+Follow the guidance below as the site grows (online play for Fathom is the next step).
 
 ### One domain, many games
 - Prefer **path-based routing** on a single domain (`/regolith`, `/cities-knights`) over subdomains. One origin means one sign-in, one PWA install, one set of push subscriptions and shared cloud saves across every game.

@@ -1,0 +1,76 @@
+/* ---------- the hub (game picker and your games) ---------- */
+.hub { max-width: 1040px; margin: 0 auto; padding: 28px 18px 48px; display: grid; gap: 28px; }
+.hub-head { display: flex; gap: 16px; align-items: center; }
+.hub-head h1 { font-size: clamp(2rem, 6vw, 3rem); line-height: 1; color: var(--dust); }
+.hub-head .lede { margin: 6px 0 0; color: var(--muted); max-width: 52ch; }
+.hub-mark { flex: none; }
+.hub-section { display: grid; gap: 12px; }
+.hub-section h2 { font-size: 1.15rem; }
+.hub-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.hub-empty { background: var(--panel); border-radius: var(--radius-m); padding: 14px 16px; margin: 0; }
+.small-print { font-size: 0.85rem; margin: 0; }
+
+.active-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.active-row { display: flex; gap: 12px; align-items: center; background: var(--panel); border-radius: var(--radius-m); padding: 10px 12px; border-left: 4px solid var(--line); }
+.active-row[data-yours] { border-left-color: var(--gold); }
+.active-row.game-fathom[data-yours] { border-left-color: #7fd1c7; }
+.active-icon { flex: none; display: grid; }
+.active-info { display: grid; gap: 2px; min-width: 0; flex: 1; }
+.active-info b { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.active-info .muted { font-size: 0.85rem; overflow-wrap: anywhere; }
+.badge.your-move { background: var(--gold); color: #1d2840; font-weight: 700; }
+.save-actions { display: inline-flex; gap: 6px; align-items: center; }
+
+.game-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.game-tile { background: var(--panel); border-radius: var(--radius-m); overflow: hidden; display: grid; grid-template-rows: auto 1fr; }
+.tile-hit { all: unset; cursor: pointer; display: block; }
+.tile-hit:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.tile-art { display: block; width: 100%; height: auto; aspect-ratio: 2 / 1; transition: transform 0.4s ease; }
+.tile-hit:hover .tile-art { transform: scale(1.03); }
+.tile-body { padding: 14px 16px 16px; display: grid; gap: 6px; align-content: start; }
+.tile-body h3 { font-size: 1.5rem; }
+.tile-body p { margin: 0; }
+.tile-kind { color: var(--dust); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; }
+.tile-fathom .tile-kind { color: #7fd1c7; }
+.tile-meta { font-size: 0.85rem; }
+.tile-body .btn { justify-self: start; margin-top: 6px; }
+
+.loading-screen { min-height: 60vh; display: grid; place-items: center; color: var(--muted); }
+
+/* back to the hub, from a game's menu */
+.hub-back { margin: 0 0 10px; }
+.linkish { background: none; border: 0; padding: 0; color: var(--muted); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.linkish:hover { color: var(--text); }
+.resume-list { display: grid; gap: 8px; margin-top: 12px; }
+.resume-list .resume { margin-top: 0; flex-wrap: wrap; }
+
+/* ---------- next game ---------- */
+.next-game { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.next-game .count { background: var(--gold); color: #1d2840; border-radius: 999px; min-width: 1.4em; padding: 0 6px; font-size: 0.78rem; font-weight: 700; line-height: 1.5; }
+.turn-done {
+  position: fixed; right: 16px; bottom: 16px; z-index: 40; width: min(360px, calc(100vw - 32px));
+  background: var(--panel-2); border-radius: var(--radius-m); padding: 14px 16px; display: grid; gap: 6px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45); border-left: 4px solid var(--gold);
+  animation: turn-done-in 0.35s ease-out;
+}
+.turn-done p { margin: 0; }
+.turn-done .muted { font-size: 0.85rem; }
+.turn-done-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+@keyframes turn-done-in { from { transform: translateY(18px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .turn-done { animation: none; } .tile-art { transition: none; } }
+
+/* ---------- forfeit ---------- */
+.forfeit-who { display: grid; gap: 6px; margin: 0 0 10px; }
+.forfeit-who legend { font-weight: 700; margin-bottom: 6px; }
+.forfeit-tag { color: #f0a58f; font-size: 0.8rem; font-weight: 400; }
+
+@media (max-width: 560px) {
+  .hub { padding: 18px 12px 40px; gap: 22px; }
+  .hub-mark { width: 48px; height: 48px; }
+  .active-row { flex-wrap: wrap; }
+  .active-row .save-actions { margin-left: auto; }
+}
+
+/* every game's top bar: tools wrap rather than run off a phone screen */
+.topbar-tools { flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+@media (max-width: 560px) { .topbar-tools { margin-left: 0; gap: 6px; } .topbar-tools .btn { padding: 6px 10px; } }

@@ -18,3 +18,9 @@
   for = "/manifest.webmanifest"
   [headers.values]
     Content-Type = "application/manifest+json"
+
+# One page app: /regolith, /fathom and the rest are served by index.html (real files win).
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

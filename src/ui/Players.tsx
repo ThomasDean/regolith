@@ -38,7 +38,7 @@ export function Players({ s, viewer, onView, queued = [] }: { s: GameState; view
                 {p.corp ? <CardArt card={CARDS[p.corp]} className="avatar-art" /> : <span className="swatch" />}
               </span>
               <div className="player-id">
-                <span className="player-name"><span className="swatch" aria-hidden="true" />{p.name}{viewer === p.id && p.name.trim().toLowerCase() !== 'you' ? ' (you)' : ''}</span>
+                <span className="player-name"><span className="swatch" aria-hidden="true" />{p.name}{viewer === p.id && p.name.trim().toLowerCase() !== 'you' ? ' (you)' : ''}{p.forfeited && <span className="forfeit-tag"> · forfeited</span>}</span>
                 <span className="player-corp">{p.corp ? CARDS[p.corp].name : queued.includes(p.id) ? 'Corporation chosen' : 'Choosing a corporation'}{p.cpu ? `, ${LEVEL_LABEL[p.cpu]}` : ''}</span>
               </div>
               <div className="player-score" title="Victory points if the game ended now">

@@ -24,9 +24,14 @@ import { fmtTemp, RES_LABEL } from './format';
 import { cloudEnabled, currentCloudId, putSave, useSession } from '../cloud';
 import { BannerView, CardShowcase, Confetti, diffEvents, FxContext, loadFxSetting, saveFxSetting, Toasts, type Banner, type Showcase, type Toast } from './Fx';
 import type { SeatRow } from '../online/protocol';
+import { regolithSaves } from './saves';
+import { NextGameButton } from '../shell/NextGame';
+import { ForfeitDialog, forfeitText } from '../shell/Forfeit';
+import { forfeit as forfeitLocal, ranking } from '../engine/game';
 
 /** What an online game gives the board: the server's view for your seat and a way to move. */
 export interface OnlineLink {
+  room: string;
   code: string;
   /** your seat, or -1 when watching */
   seat: number;
@@ -41,27 +46,15 @@ export interface OnlineLink {
   /** ask the server for the next CPU step at this version */
   advance: (version: number) => void;
   setSeat: (seat: number, kind: 'human' | Level) => Promise<void>;
-}
-
-const SAVE_KEY = 'regolith-save-v1';
-export function saveGame(s: GameState) {
-  try { localStorage.setItem(SAVE_KEY, JSON.stringify(s)); } catch { /* storage unavailable */ }
-}
-export function loadGame(): GameState | null {
-  try {
-    const raw = localStorage.getItem(SAVE_KEY);
-    return raw ? (JSON.parse(raw) as GameState) : null;
-  } catch { return null; }
-}
-export function clearSave() {
-  try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ }
+  /** give up your seat for good */
+  forfeit: () => Promise<void>;
 }
 
 interface Entry { s: GameState; actor: number | null }
 
 const deciderOf = (s: GameState) => (s.prompt ? s.prompt.pid : s.active);
 
-export function Game({ initial, onExit, online }: { initial: GameState; onExit: () => void; online?: OnlineLink }) {
+export function Game({ initial, onExit, online, saveId }: { initial: GameState; onExit: () => void; online?: OnlineLink; saveId?: string }) {
   const [hist, setHist] = useState<Entry[]>([{ s: online?.view ?? initial, actor: null }]);
   const s = hist[hist.length - 1].s;
   const humans = s.players.filter((p) => !p.cpu).map((p) => p.id);
@@ -114,11 +107,11 @@ export function Game({ initial, onExit, online }: { initial: GameState; onExit: 
     });
   }, [onlineView]);
 
-  useEffect(() => { if (!online) saveGame(s); }, [s, online]);
+  useEffect(() => { if (!online && saveId) regolithSaves.save(saveId, s); }, [s, online, saveId]);
 
   // cloud sync: a couple of seconds after the last change (right away when the game ends)
   const session = useSession();
-  const cloudId = useMemo(() => (cloudEnabled ? currentCloudId() : ''), []);
+  const cloudId = useMemo(() => (cloudEnabled ? saveId ?? currentCloudId() : ''), [saveId]);
   const [cloud, setCloud] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   useEffect(() => {
     if (!cloudEnabled || !session || online) return;
@@ -239,6 +232,20 @@ export function Game({ initial, onExit, online }: { initial: GameState; onExit: 
   const spacePrompt = pr?.kind === 'space' ? pr : null;
   const me = viewer !== null ? s.players[viewer] : null;
 
+  // forfeit: online, your own seat; at one device, any human still playing
+  const [forfeiting, setForfeiting] = useState(false);
+  const forfeitable = over ? [] : online
+    ? (me && !me.forfeited && online.seats[me.id]?.kind === 'human' ? [{ id: me.id, name: me.name }] : [])
+    : s.players.filter((p) => !p.cpu && !p.forfeited).map((p) => ({ id: p.id, name: p.name }));
+  const doForfeit = async (pid: number) => {
+    if (online) { await online.forfeit(); return; }
+    lastOp.current = 'act';
+    setHist((h) => [...h.slice(-80), { s: forfeitLocal(h[h.length - 1].s, pid), actor: null }]);
+  };
+  // online, your turn is done once the game stops waiting on you: offer the next game
+  const turnDone = !!online && !over && online.seat >= 0 && !!me && !me.forfeited && !online.waiting.includes(online.seat) && !sending;
+  const gameKey = online ? `regolith:room:${online.room}` : saveId ? `regolith:local:${saveId}` : null;
+
   return (
     <FxContext.Provider value={fxOn}>
     <div className="game" data-fx={fxOn ? 'on' : 'off'}>
@@ -270,6 +277,8 @@ export function Game({ initial, onExit, online }: { initial: GameState; onExit: 
           ) : (
             <button type="button" className="btn ghost" onClick={undo} disabled={!canUndo} title="Undo your last step (not after cards are drawn)">Undo</button>
           )}
+          {forfeitable.length > 0 && <button type="button" className="btn ghost" onClick={() => setForfeiting(true)}>Forfeit</button>}
+          <NextGameButton current={gameKey} turnDone={turnDone} />
           <button type="button" className="btn ghost" onClick={onExit}>Menu</button>
         </div>
       </header>
@@ -329,6 +338,10 @@ export function Game({ initial, onExit, online }: { initial: GameState; onExit: 
       {openCard && me && <CardDialog s={s} pid={me.id} id={openCard} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} onClose={() => setOpenCard(null)} act={(a) => { setOpenCard(null); act(a); }} />}
       {viewCards !== null && <TableauDialog s={s} pid={viewCards} onClose={() => setViewCards(null)} />}
       {panel === 'sell' && me && <SellDialog s={s} pid={me.id} onClose={() => setPanel(null)} act={(a) => { setPanel(null); act(a); }} />}
+      {forfeiting && (
+        <ForfeitDialog seats={forfeitable} initial={viewer ?? decider} onClose={() => setForfeiting(false)} onConfirm={doForfeit}
+          consequence={(id) => forfeitText(s.players, id, !!online || forfeitable.length === 1)} />
+      )}
       {over && <GameOver s={s} onExit={onExit} />}
       {over && fxOn && <Confetti colors={s.players.map((p) => p.color)} />}
       {show && <CardShowcase key={show.key} show={show} s={s} onDone={endShow} fast={cpuSpeed <= 120} />}
@@ -731,6 +744,8 @@ function PromptDialog({ s, pr, act }: { s: GameState; pr: Prompt; act: (a: Actio
 }
 
 // ---------------- online seats (host) ----------------
+const LEVEL_NAME = { easy: 'Easy CPU', normal: 'Normal CPU', hard: 'Hard CPU' } as const;
+
 function SeatsDialog({ s, online, onClose }: { s: GameState; online: OnlineLink; onClose: () => void }) {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -745,7 +760,7 @@ function SeatsDialog({ s, online, onClose }: { s: GameState; online: OnlineLink;
         {online.seats.map((seat, i) => (
           <li key={i} style={{ ['--pc' as string]: s.players[i].color }}>
             <span className="swatch" /><span className="seat-name">{seat.name}</span>
-            {i === online.seat ? <span className="muted">You</span> : (
+            {i === online.seat ? <span className="muted">You</span> : seat.forfeited || s.players[i].forfeited ? <span className="muted">Forfeited · {s.players[i].cpu ? LEVEL_NAME[s.players[i].cpu!] : 'CPU'}</span> : (
               <select value={s.players[i].cpu ?? 'human'} disabled={busy} onChange={(e) => change(i, e.target.value as 'human' | Level)} aria-label={`Who plays ${seat.name}`}>
                 {seat.user && <option value="human">{seat.name} plays</option>}
                 <option value="easy">Easy CPU</option>
@@ -779,7 +794,7 @@ function TableauDialog({ s, pid, onClose }: { s: GameState; pid: number; onClose
 
 // ---------------- game over ----------------
 function GameOver({ s, onExit }: { s: GameState; onExit: () => void }) {
-  const rows = useMemo(() => s.players.map((p) => ({ p, sc: score(s, p.id) })).sort((a, b) => b.sc.total - a.sc.total || b.p.res.mc - a.p.res.mc), [s]);
+  const rows = useMemo(() => ranking(s, (pid) => score(s, pid)).map(({ pid, sc }) => ({ p: s.players[pid], sc })), [s]);
   return (
     <Dialog title={`${rows[0].p.name} wins`} wide footer={<button type="button" className="btn" onClick={onExit}>Back to menu</button>}>
       <div className="gameover-head" style={{ ['--pc' as string]: rows[0].p.color }}>
@@ -787,20 +802,20 @@ function GameOver({ s, onExit }: { s: GameState; onExit: () => void }) {
           <polygon points="24,3 43,14 43,34 24,45 5,34 5,14" fill="var(--pc)" stroke="#1d2840" strokeWidth="2" />
           <path d="M13 31 15 18l6 6 3-9 3 9 6-6 2 13Z" fill="#f6e8cf" stroke="#1d2840" strokeWidth="1.5" strokeLinejoin="round" />
         </svg>
-        <p>Mars was terraformed in {s.generation} generations. {rows[0].p.name} finishes with {rows[0].sc.total} VP.</p>
+        <p>{s.endedBy === 'forfeit' ? `The game ended early in generation ${s.generation} after players forfeited.` : `Mars was terraformed in ${s.generation} generations.`} {rows[0].p.name} finishes with {rows[0].sc.total} VP.</p>
       </div>
       <table className="scores">
         <thead><tr><th>Player</th><th>TR</th><th>Milestones</th><th>Awards</th><th>Greeneries</th><th>Cities</th><th>Cards</th><th>Total</th></tr></thead>
         <tbody>
           {rows.map(({ p, sc }) => (
             <tr key={p.id} style={{ ['--pc' as string]: p.color }}>
-              <th scope="row"><span className="swatch" />{p.name}<small>{p.corp ? CARDS[p.corp].name : ''}</small></th>
+              <th scope="row"><span className="swatch" />{p.name}{p.forfeited && <span className="forfeit-tag"> · forfeited</span>}<small>{p.corp ? CARDS[p.corp].name : ''}</small></th>
               <td>{sc.tr}</td><td>{sc.milestones}</td><td>{sc.awards}</td><td>{sc.greeneries}</td><td>{sc.cities}</td><td>{sc.cards}</td><td><b>{sc.total}</b></td>
             </tr>
           ))}
         </tbody>
       </table>
-      <p className="muted">Ties go to the player with the most M€ left.</p>
+      <p className="muted">Ties go to the player with the most M€ left.{rows.some((r) => r.p.forfeited) ? ' Forfeited players rank last.' : ''}</p>
       <Analytics s={s} />
     </Dialog>
   );
