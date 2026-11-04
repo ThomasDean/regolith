@@ -1,9 +1,10 @@
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import { maxOceans, maxOxy, maxTemp } from '../engine/board';
 import type { GameState, Space } from '../engine/types';
 import { CARDS } from '../engine/cards';
 import { hashStr, rng } from './CardArt';
 import { resGlyph } from './Icons';
+import { TileGlyph } from './Symbols';
 
 const R = 30; // hex radius
 const W = Math.sqrt(3) * R;
@@ -18,6 +19,45 @@ const hexPath = (cx: number, cy: number, r = R) =>
     const a = (Math.PI / 180) * (60 * i - 30);
     return `${(cx + r * Math.cos(a)).toFixed(2)},${(cy + r * Math.sin(a)).toFixed(2)}`;
   }).join(' ');
+
+/** Lighten (amt > 0) or darken (amt < 0) a #rrggbb colour. */
+function shade(hex: string, amt: number): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return hex;
+  const v = parseInt(m[1], 16);
+  const ch = (sh: number) => {
+    const c = (v >> sh) & 255;
+    return Math.round(amt >= 0 ? c + (255 - c) * amt : c * (1 + amt));
+  };
+  return `#${[16, 8, 0].map((sh) => ch(sh).toString(16).padStart(2, '0')).join('')}`;
+}
+
+/** The owner's marker: a little player cube, as on the physical board. */
+function OwnerCube({ cx, cy, color, size = 7 }: { cx: number; cy: number; color: string; size?: number }) {
+  const k = size, h = k * 0.58;
+  const top = `M${cx},${cy - k} l${k},${h} l${-k},${h} l${-k},${-h}Z`;
+  const left = `M${cx - k},${cy - k + h} l${k},${h} v${k * 1.05} l${-k},${-h}Z`;
+  const right = `M${cx + k},${cy - k + h} l${-k},${h} v${k * 1.05} l${k},${-h}Z`;
+  return (
+    <g className="owner-cube" pointerEvents="none">
+      <path d={`${top} ${left} ${right}`} fill="none" stroke="#fff" strokeWidth="3.6" strokeLinejoin="round" opacity="0.9" />
+      <path d={left} fill={shade(color, -0.28)} />
+      <path d={right} fill={shade(color, -0.45)} />
+      <path d={top} fill={shade(color, 0.22)} />
+      <path d={`${top} ${left} ${right}`} fill="none" stroke="#14182a" strokeWidth="1.1" strokeLinejoin="round" />
+    </g>
+  );
+}
+
+/** Owner rim: a dark keyline under the player colour so it reads on any tile art. */
+function OwnerRim({ cx, cy, color }: { cx: number; cy: number; color: string }) {
+  return (
+    <g pointerEvents="none">
+      <polygon points={hexPath(cx, cy, R - 3)} fill="none" stroke="#14182a" strokeWidth={6.4} />
+      <polygon points={hexPath(cx, cy, R - 3)} fill="none" stroke={color} strokeWidth={4} />
+    </g>
+  );
+}
 
 const GEO = new Map<number, ReturnType<typeof geometry>>();
 /** Cached per map shape (the standard maps share one). */
@@ -115,6 +155,7 @@ function TileArt({ s, sp, cx, cy, fresh }: { s: GameState; sp: Space; cx: number
           ))}
         </g>
         <path d={`M${cx - 6},${cy - 15} l5,-2 l4,1 l-2,3Z`} fill="#eef7fb" opacity="0.9" />
+        <title>Ocean (no owner)</title>
       </g>
     );
   }
@@ -129,8 +170,9 @@ function TileArt({ s, sp, cx, cy, fresh }: { s: GameState; sp: Space; cx: number
             ? <g key={i}><rect x={x - 0.9} y={y + 1} width="1.8" height="4" fill="#3a2418" /><circle cx={x} cy={y - 1} r={5.5 * sc} fill="#3f7a3a" stroke="#24451c" strokeWidth="0.8" /><circle cx={x - 1.8} cy={y - 2.8} r={1.8 * sc} fill="#9cc35a" opacity="0.6" /></g>
             : <g key={i}><rect x={x - 0.8} y={y + 3} width="1.6" height="3" fill="#3a2418" /><path d={`M${x},${y - 9 * sc} l${5 * sc},${12 * sc} h${-10 * sc}Z`} fill="#2f6a3c" stroke="#1d3f1a" strokeWidth="0.8" /></g>
         ))}
-        <polygon points={hexPath(cx, cy, R - 2.5)} fill="none" stroke={owner!.color} strokeWidth={3.4} />
-        <polygon points={hexPath(cx, cy - R + 7, 4.2)} fill={owner!.color} stroke="#1d2840" strokeWidth="1" />
+        <OwnerRim cx={cx} cy={cy} color={owner!.color} />
+        <OwnerCube cx={cx} cy={cy - R + 13} color={owner!.color} />
+        <title>{`Greenery · ${owner!.name}`}</title>
       </g>
     );
   }
@@ -148,9 +190,10 @@ function TileArt({ s, sp, cx, cy, fresh }: { s: GameState; sp: Space; cx: number
         ))}
         <path d={`M${cx - 17},${cy + 10} a17,15 0 0 1 34,0Z`} fill="#bfe9ff" opacity="0.35" stroke="#e8f8ff" strokeWidth="1" />
         <path d={`M${cx - 11},${cy - 1} a10,9 0 0 1 7,-5`} fill="none" stroke="#fff" strokeOpacity="0.7" strokeWidth="1.2" />
-        <polygon points={hexPath(cx, cy, R - 2.5)} fill="none" stroke={owner!.color} strokeWidth={3.4} />
-        <polygon points={hexPath(cx, cy - R + 7, 4.2)} fill={owner!.color} stroke="#1d2840" strokeWidth="1" />
+        <OwnerRim cx={cx} cy={cy} color={owner!.color} />
+        <OwnerCube cx={cx} cy={cy - R + 13} color={owner!.color} />
         {t.card === 'capital' && <text x={cx} y={cy + 20} textAnchor="middle" className="tile-label">Capital</text>}
+        <title>{`${t.card ? CARDS[t.card]?.name ?? 'City' : 'City'} · ${owner!.name}`}</title>
       </g>
     );
   }
@@ -159,9 +202,11 @@ function TileArt({ s, sp, cx, cy, fresh }: { s: GameState; sp: Space; cx: number
     <g className={cls}>
       <polygon points={hexPath(cx, cy, R - 1)} fill={owner?.color ?? '#888'} />
       <polygon points={hexPath(cx, cy, R - 1)} fill="url(#specialSheen)" />
+      <polygon points={hexPath(cx, cy, R - 1)} fill="none" stroke="#14182a" strokeWidth="1.6" />
       <polygon points={hexPath(cx, cy, R - 7)} fill="#f3ecdd" opacity="0.88" stroke="#1d2840" strokeWidth="1.5" />
-      {specialGlyph(t.card, cx, cy)}
-      <title>{name}</title>
+      {specialGlyph(t.card, cx, cy + 3)}
+      {owner && <OwnerCube cx={cx} cy={cy - R + 11} color={owner.color} size={6} />}
+      <title>{`${name || 'Special tile'}${owner ? ` · ${owner.name}` : ''}`}</title>
     </g>
   );
 }
@@ -179,6 +224,8 @@ interface Props {
 export const Board = memo(function Board({ s, options, onPick, fresh, pulse }: Props) {
   const opt = new Set(options ?? []);
   const fr = new Set(fresh ?? []);
+  /** player whose tiles are highlighted (legend), or null */
+  const [focus, setFocus] = useState<number | null>(null);
   const mars = s.board.filter((x) => x.type !== 'off');
   const off = s.board.filter((x) => x.type === 'off');
   const { BOARD_W, BOARD_H, CX, CY, PLANET_R, STARS, CRATERS } = geometryOf(s.board);
@@ -252,7 +299,7 @@ export const Board = memo(function Board({ s, options, onPick, fresh, pulse }: P
           return (
             <g
               key={sp.id}
-              className={`hex ${can ? 'pickable' : ''}`}
+              className={`hex ${can ? 'pickable' : ''} ${focus !== null && !can ? (sp.tile && sp.tile.owner === focus ? 'owner-focus' : 'owner-dim') : ''}`}
               onClick={can && onPick ? () => onPick(sp.id) : undefined}
               onKeyDown={can && onPick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPick(sp.id); } } : undefined}
               tabIndex={can ? 0 : -1}
@@ -298,6 +345,37 @@ export const Board = memo(function Board({ s, options, onPick, fresh, pulse }: P
           );
         })}
       </div>
+      <OwnerLegend s={s} focus={focus} setFocus={setFocus} />
     </div>
   );
 });
+
+/** Who owns what: tile counts per player; tapping one highlights that player's tiles. */
+function OwnerLegend({ s, focus, setFocus }: { s: GameState; focus: number | null; setFocus: (f: number | null) => void }) {
+  const counts = s.players.map((p) => {
+    const mine = s.board.filter((x) => x.tile && x.tile.owner === p.id);
+    return {
+      p,
+      city: mine.filter((x) => x.tile!.kind === 'city').length,
+      green: mine.filter((x) => x.tile!.kind === 'greenery').length,
+      special: mine.filter((x) => x.tile!.kind === 'special').length,
+    };
+  });
+  return (
+    <div className="owner-legend" role="group" aria-label="Tile owners: tap a player to highlight their tiles">
+      {counts.map(({ p, city, green, special }) => (
+        <button key={p.id} type="button" className={`owner-chip ${focus === p.id ? 'on' : ''}`} aria-pressed={focus === p.id}
+          style={{ ['--pc' as string]: p.color }} onClick={() => setFocus(focus === p.id ? null : p.id)}
+          title={focus === p.id ? 'Show all tiles' : `Highlight ${p.name}'s tiles`}>
+          <svg viewBox="-9 -9 18 18" width="16" height="16" aria-hidden="true"><OwnerCube cx={0} cy={-1} color={p.color} size={6.5} /></svg>
+          <span className="owner-name">{p.name}</span>
+          <span className="owner-counts" aria-label={`${city} cities, ${green} greeneries${special ? `, ${special} special tiles` : ''}`}>
+            <span className="oc"><TileGlyph tile="city" size={13} />{city}</span>
+            <span className="oc"><TileGlyph tile="greenery" size={13} />{green}</span>
+            {special > 0 && <span className="oc"><TileGlyph tile="special" size={13} />{special}</span>}
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
