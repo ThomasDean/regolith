@@ -181,6 +181,8 @@ export interface Player {
   fleetsUsed?: number;
   /** Turmoil: used the ruling party's once-a-generation action */
   policyUsed?: boolean;
+  /** gave up: a CPU plays the seat out and it ranks last */
+  forfeited?: boolean;
 }
 
 export interface PlayerSeat { name: string; color: string; cpu: Level | null }
@@ -293,4 +295,6 @@ export interface GameState {
   /** colony tiles not in play (Aridor adds one) */
   spareColonies?: string[];
   turmoil?: TurmoilState;
+  /** the game ended early because players forfeited */
+  endedBy?: 'forfeit';
 }

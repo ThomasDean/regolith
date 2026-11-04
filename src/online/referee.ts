@@ -7,7 +7,7 @@
 // It is pure TypeScript with the storage behind an interface, so the same code runs in the
 // Supabase Edge Function (server/edge.ts) and in the tests with an in-memory store.
 import type { Action, GameState, Level } from '../engine/types';
-import { applyActionMut, cleanExpansions, createGame } from '../engine/game';
+import { applyActionMut, cleanExpansions, createGame, forfeitMut } from '../engine/game';
 import { cpuAction } from '../engine/ai/cpu';
 import { decider } from '../engine/moves';
 import { HIDDEN, type PlayReply, type PlayRequest, type RoomRow, type SeatRow } from './protocol';
@@ -235,6 +235,7 @@ async function step(req: PlayRequest, uid: string, store: Store, l: Loaded, now:
       const pending = { ...l.pending };
       const log: SavePatch['actions'] = [];
       const me = s.players[seat];
+      if (me.forfeited) throw new HttpError(409, 'You forfeited this game');
       if (me.cpu) throw new HttpError(409, 'A CPU is playing your seat');
       if (decider(s) !== seat) {
         // corporation and research picks can be made at once and are applied in turn order
@@ -290,11 +291,27 @@ async function step(req: PlayRequest, uid: string, store: Store, l: Loaded, now:
       const kind = req.kind;
       if (kind !== 'human' && !LEVELS.includes(kind)) throw new HttpError(400, 'Unknown seat type');
       if (kind === 'human' && !room.seats[i].user) throw new HttpError(409, 'Nobody has sat there; it stays a CPU');
+      if (kind === 'human' && (room.seats[i].forfeited || l.state.players[i].forfeited)) throw new HttpError(409, 'That player forfeited; the seat stays a CPU');
       const s = structuredClone(l.state);
       s.players[i].cpu = kind === 'human' ? null : kind;
       const seats = room.seats.map((x, j) => (j === i ? { ...x, kind } : x));
       const saved = await commit(store, l, patchFor(room, s, l.pending, [], seats), uid);
       return saved ? reply(saved, s, l.pending, uid) : null;
+    }
+
+    case 'forfeit': {
+      if (!l.state || room.status !== 'playing') throw new HttpError(409, 'This game is not being played');
+      if (seat < 0) throw new HttpError(403, 'You are watching this game');
+      if (room.seats[seat].forfeited || l.state.players[seat].forfeited) throw new HttpError(409, 'You already forfeited');
+      const s = structuredClone(l.state);
+      // a pick waiting for its turn is dropped: the CPU taking the seat makes its own
+      const pending = { ...l.pending };
+      delete pending[seat];
+      try { forfeitMut(s, seat); } catch (e) { throw new HttpError(422, (e as Error).message); }
+      const kind = s.players[seat].cpu ?? 'normal';
+      const seats = room.seats.map((x, j) => (j === seat ? { ...x, kind, forfeited: true } : x));
+      const saved = await commit(store, l, patchFor(room, s, pending, [], seats), uid);
+      return saved ? reply(saved, s, pending, uid) : null;
     }
 
     default:

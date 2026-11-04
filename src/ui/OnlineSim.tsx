@@ -54,11 +54,12 @@ function Seat({ store, uid, visible }: { store: MemStore; uid: string; visible: 
     return () => { store.listeners.delete(pull); };
   }, [store, call]);
   const link = useMemo<OnlineLink | null>(() => reply?.view ? {
-    code: reply.room.code, seat: reply.seat, host: reply.room.host === uid, version: reply.room.version, view: reply.view,
+    room: ROOM, code: reply.room.code, seat: reply.seat, host: reply.room.host === uid, version: reply.room.version, view: reply.view,
     seats: reply.room.seats, waiting: reply.room.waiting, queued: reply.queued,
     send: (a: Action) => call({ op: 'act', room: ROOM, action: a }),
     advance: (version: number) => { call({ op: 'advance', room: ROOM, version }).catch((e) => setErr(String(e))); },
     setSeat: (seat: number, kind: 'human' | Level) => call({ op: 'seat', room: ROOM, seat, kind }),
+    forfeit: () => call({ op: 'forfeit', room: ROOM }),
   } : null, [reply, uid, call]);
   return (
     <div style={{ display: visible ? 'block' : 'none' }} data-seat={uid}>

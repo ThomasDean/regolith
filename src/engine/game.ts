@@ -497,6 +497,36 @@ function endGame(s: GameState) {
   log(s, null, 'Final scoring.');
 }
 
+/**
+ * A player gives up. Their seat is played out by a Normal CPU so everyone else can finish, and
+ * they rank last. If that leaves fewer than two players, or no human, the game ends now.
+ */
+export function forfeitMut(s: GameState, pid: number): GameState {
+  const p = s.players[pid];
+  if (!p || s.phase === 'over') fail('The game is over');
+  if (p.forfeited) fail(`${p.name} has already forfeited`);
+  p.forfeited = true;
+  log(s, pid, `${p.name} forfeited.`);
+  const left = s.players.filter((x) => !x.forfeited);
+  if (left.length < 2 || !left.some((x) => !x.cpu)) {
+    s.endedBy = 'forfeit';
+    s.queue = [];
+    s.pendingAction = null;
+    endGame(s);
+    return s;
+  }
+  p.cpu ??= 'normal';
+  return s;
+}
+
+export const forfeit = (state: GameState, pid: number): GameState => forfeitMut(structuredClone(state), pid);
+
+/** Final order: forfeited players last, then VP, then M€ left (the tie-break). */
+export function ranking<T extends { total: number }>(s: GameState, sc: (pid: number) => T): { pid: number; sc: T }[] {
+  return s.players.map((p) => ({ pid: p.id, sc: sc(p.id) }))
+    .sort((a, b) => Number(!!s.players[a.pid].forfeited) - Number(!!s.players[b.pid].forfeited) || b.sc.total - a.sc.total || s.players[b.pid].res.mc - s.players[a.pid].res.mc);
+}
+
 function beginAction(s: GameState, pid: number, ops: Op[], src?: string): GameState {
   s.pendingAction = { pid, counts: true };
   enqueue(s, pid, ops, src);

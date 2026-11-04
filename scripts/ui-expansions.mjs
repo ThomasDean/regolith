@@ -4,7 +4,7 @@
 // Usage: node scripts/ui-expansions.mjs <url> <outdir> [clicks]
 import { chromium } from 'playwright';
 
-const url = process.argv[2] ?? 'http://localhost:5173/';
+const url = process.argv[2] ?? 'http://localhost:5173/regolith';
 const out = process.argv[3] ?? '.';
 const browser = await chromium.launch();
 const errors = [];

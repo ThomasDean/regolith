@@ -1,4 +1,4 @@
-// Regolith service worker: keeps the app usable offline (hotseat play needs no server) and
+// Board games service worker: keeps the app usable offline (hotseat play needs no server) and
 // handles Web Push for online games: shows "your move" notifications and sets the Home Screen
 // badge to the number of games waiting on you. Plain JS, served as-is from the site root.
 const CACHE = 'regolith-v1';
@@ -30,9 +30,9 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname === '/sw.js') return;
 
   if (req.mode === 'navigate') {
-    // Network first so a new deploy shows up at once. Only the app itself (the site root, with
-    // or without ?join= and the like) is kept as the offline shell; other pages stay online-only.
-    const isApp = url.pathname === '/';
+    // Network first so a new deploy shows up at once. The app's pages (the hub and every game's
+    // path, with or without ?join= and the like) all share one offline shell, kept under the root.
+    const isApp = url.pathname === '/' || /^\/(regolith|fathom)(\/|$)/.test(url.pathname);
     event.respondWith(
       fetch(req)
         .then((res) => {

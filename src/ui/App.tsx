@@ -1,15 +1,18 @@
-import { lazy, Suspense, useCallback, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import type { GameState, Level } from '../engine/types';
 import { createGame } from '../engine/game';
 import { Board } from './Board';
 import { Card } from './Card';
-import { clearSave, Game, loadGame, saveGame } from './Game';
+import { Game } from './Game';
 import { CloudPanel } from './Cloud';
 import { Gallery } from './Gallery';
-import { startNewCloudId, useSession } from '../cloud';
+import { currentCloudId, setCloudId, startNewCloudId, useSession } from '../cloud';
 import { hostRoom, OnlinePanel, OnlineRoom } from './Online';
 import { onlineEnabled } from '../online/client';
-import { roomFromUrl, usePwa } from '../pwa';
+import { roomFromUrl } from '../pwa';
+import { navigate, useLocation } from '../shell/route';
+import { migrateLegacySave, regolithSaves } from './saves';
+import { useLocalSaves } from '../shell/useLocalSaves';
 import { PLAYER_COLORS, PLAYER_COLOR_NAMES } from './format';
 import type { BoardId } from '../engine/board';
 import { BoardPicker, ExpansionPicker, initialMA, MAPicker, maForBoard, type MAState } from './Setup';
@@ -31,26 +34,41 @@ const CPU_NAMES = ['Vesta', 'Ceres', 'Pallas', 'Hygiea', 'Juno'];
 const FAN = ['comet', 'kelp-farming', 'fusion-power', 'birds', 'terraforming-ganymede'];
 
 export function App() {
-  const [game, setGame] = useState<GameState | null>(null);
-  const saved = useMemo(() => (game ? null : loadGame()), [game]);
-  const [gallery, setGallery] = useState(() => typeof location !== 'undefined' && location.hash === '#gallery');
-  // a tapped notification opens the app at /?room=ID; swallow the parameter so a reload doesn't reopen it
-  const [room, setRoom] = useState<string | null>(() => {
-    const id = typeof location !== 'undefined' ? roomFromUrl() : null;
-    if (id) history.replaceState(null, '', location.pathname);
-    return id;
-  });
-  const session = useSession();
-  const openRoom = useCallback((id: string) => { setGame(null); setRoom(id); }, []);
-  usePwa(session?.user.id, openRoom);
-  if (import.meta.env.DEV && typeof location !== 'undefined' && location.hash === '#online-sim') return <Suspense fallback={null}><OnlineSim /></Suspense>;
-  if (room) return <OnlineRoom key={room} id={room} onExit={() => setRoom(null)} />;
-  if (gallery) return <Gallery onExit={() => { history.replaceState(null, '', location.pathname); setGallery(false); }} />;
-  if (game) return <Game key={game.options.seed} initial={game} onExit={() => setGame(null)} />;
-  return <Menu saved={saved && saved.phase !== 'over' ? saved : null} onStart={setGame} onOnline={setRoom} onGallery={() => { history.replaceState(null, '', '#gallery'); setGallery(true); }} />;
+  const { params, hash } = useLocation();
+  migrateLegacySave();
+  const room = roomFromUrl(`/?${params.toString()}`);
+  const local = params.get('local');
+  const toMenu = useCallback(() => navigate('/regolith'), []);
+  const openRoom = useCallback((id: string) => navigate(`/regolith?room=${id}`), []);
+  const startLocal = useCallback((s: GameState, id = startNewCloudId()) => { regolithSaves.save(id, s); setCloudId(id); navigate(`/regolith?local=${id}`); }, []);
+  useEffect(() => { document.title = 'Regolith'; }, []);
+  if (import.meta.env.DEV && hash === '#online-sim') return <Suspense fallback={null}><OnlineSim /></Suspense>;
+  if (room) return <OnlineRoom key={room} id={room} onExit={toMenu} />;
+  if (hash === '#gallery') return <Gallery onExit={toMenu} />;
+  if (local) return <LocalGame key={local} id={local} onExit={toMenu} />;
+  return <Menu onStart={startLocal} onOnline={openRoom} onGallery={() => navigate('/regolith#gallery')} />;
 }
 
-function Menu({ saved, onStart, onOnline, onGallery }: { saved: GameState | null; onStart: (s: GameState) => void; onOnline: (room: string) => void; onGallery: () => void }) {
+/** A hotseat game saved on this device, opened by its id. */
+function LocalGame({ id, onExit }: { id: string; onExit: () => void }) {
+  const initial = useMemo(() => regolithSaves.load(id), [id]);
+  useEffect(() => { if (initial) setCloudId(id); }, [id, initial]);
+  if (!initial) {
+    return (
+      <div className="online-screen">
+        <div className="menu-panel">
+          <h2>That game isn’t on this device</h2>
+          <p className="muted">It may have been started on another device or browser. Signed-in games can be resumed from Cloud saves.</p>
+          <button type="button" className="btn" onClick={onExit}>Back to Regolith</button>
+        </div>
+      </div>
+    );
+  }
+  return <Game initial={initial} saveId={id} onExit={onExit} />;
+}
+
+function Menu({ onStart, onOnline, onGallery }: { onStart: (s: GameState, id?: string) => void; onOnline: (room: string) => void; onGallery: () => void }) {
+  const saved = useLocalSaves(regolithSaves).filter((x) => !x.over);
   const session = useSession();
   const [hosting, setHosting] = useState(false);
   const [hostErr, setHostErr] = useState<string | null>(null);
@@ -73,8 +91,6 @@ function Menu({ saved, onStart, onOnline, onGallery }: { saved: GameState | null
   const names = seats.map((s) => s.name.trim());
   const valid = names.every(Boolean) && new Set(names).size === names.length;
   const start = () => {
-    clearSave();
-    startNewCloudId();
     onStart(createGame(seats.map((s) => ({ name: s.name.trim(), color: s.color, cpu: s.kind === 'human' ? null : s.kind })), {
       corporateEra, seed: seed.trim() ? Number(seed) || hash(seed) : undefined, ...settings,
     }));
@@ -91,14 +107,22 @@ function Menu({ saved, onStart, onOnline, onGallery }: { saved: GameState | null
         <h1>Regolith</h1>
         <p className="lede">Terraform Mars against friends on one device, or against CPU rivals that build engines of their own.</p>
 
-        {saved && (
-          <div className="resume">
-            <span>Game in progress: generation {saved.generation}, {saved.players.map((p) => p.name).join(', ')}.</span>
-            <button type="button" className="btn" onClick={() => onStart(saved)}>Resume</button>
-          </div>
+        <p className="hub-back"><button type="button" className="linkish" onClick={() => navigate('/')}>← All games</button></p>
+        {saved.length > 0 && (
+          <section className="resume-list" aria-label="Games in progress on this device">
+            {saved.map((g) => (
+              <div className="resume" key={g.id}>
+                <span>{g.title}: {g.players}.</span>
+                <span className="save-actions">
+                  <button type="button" className="btn" onClick={() => navigate(`/regolith?local=${g.id}`)}>Resume</button>
+                  <button type="button" className="icon-btn" aria-label={`Delete the game with ${g.players}`} title="Delete this game from this device" onClick={() => { if (confirm('Delete this game from this device?')) regolithSaves.remove(g.id); }}>×</button>
+                </span>
+              </div>
+            ))}
+          </section>
         )}
 
-        <CloudPanel onResume={(g) => { saveGame(g); onStart(g); }} />
+        <CloudPanel onResume={(g) => onStart(g, currentCloudId())} />
         <OnlinePanel onOpen={onOnline} />
 
         <h2>Players</h2>

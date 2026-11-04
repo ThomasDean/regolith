@@ -2,9 +2,9 @@
 // game against CPUs, failing on any page error. Usage: node scripts/ui-check.mjs <url> <outdir>
 import { chromium } from 'playwright';
 
-const url = process.argv[2] ?? 'http://localhost:4173/';
+const url = process.argv[2] ?? 'http://localhost:4173/regolith';
 const out = process.argv[3] ?? '.';
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+const browser = await chromium.launch({ executablePath: process.env.CHROME ?? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
 const errors = [];
 
 async function page(width, height) {

@@ -56,7 +56,7 @@ export function OnlinePanel({ onOpen }: { onOpen: (room: string) => void }) {
     history.replaceState(null, '', window.location.pathname);
     onOpen(id);
   });
-  const live = (rooms ?? []).filter((r) => r.status !== 'over' || Date.now() - new Date(r.updated_at).getTime() < 3 * 864e5);
+  const live = (rooms ?? []).filter((r) => (r.status !== 'over' || Date.now() - new Date(r.updated_at).getTime() < 3 * 864e5) && !r.seats.find((x) => x.user === uid)?.forfeited);
 
   return (
     <section className="online" aria-labelledby="online-h">
@@ -304,6 +304,7 @@ function OnlineGame({ row, onExit }: { row: RoomRow; onExit: () => void }) {
   }, [roomId, take]);
   useEffect(() => () => { if (retry.current) clearTimeout(retry.current); }, []);
   const setSeat = useCallback(async (seat: number, kind: 'human' | Level) => { take(await play({ op: 'seat', room: roomId, seat, kind })); }, [roomId, take]);
+  const forfeit = useCallback(async () => { take(await play({ op: 'forfeit', room: roomId })); }, [roomId, take]);
 
   // the Home Screen badge counts games waiting on you, so recount when this one changes hands
   const waitingKey = `${row.status}:${row.waiting.join(',')}`;
@@ -320,8 +321,8 @@ function OnlineGame({ row, onExit }: { row: RoomRow; onExit: () => void }) {
     );
   }
   const link: OnlineLink = {
-    code: reply.room.code, seat: reply.seat, host: reply.room.host === uid, version: reply.room.version, view: reply.view as GameState,
-    seats: reply.room.seats, waiting: reply.room.waiting, queued: reply.queued, send, advance, setSeat,
+    room: roomId, code: reply.room.code, seat: reply.seat, host: reply.room.host === uid, version: reply.room.version, view: reply.view as GameState,
+    seats: reply.room.seats, waiting: reply.room.waiting, queued: reply.queued, send, advance, setSeat, forfeit,
   };
   return <Game initial={reply.view} online={link} onExit={onExit} />;
 }
