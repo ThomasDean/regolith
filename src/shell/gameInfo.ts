@@ -23,7 +23,7 @@ export const GAME_INFO: Record<GameId, GameInfo> = {
   fathom: {
     id: 'fathom', name: 'Fathom', path: '/fathom', kind: 'Finspan',
     blurb: 'Stock your own stretch of ocean with fish, from the sunlit shallows to the midnight deep, then send divers down to set it working.',
-    players: '2–5', minutes: '40–70', online: false,
+    players: '1–5', minutes: '40–70', online: true,
   },
 };
 

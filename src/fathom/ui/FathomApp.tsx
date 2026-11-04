@@ -1,5 +1,5 @@
 // Fathom: the menu (players, goals, games in progress) and the game screen.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './fathom.css';
 import { FISH } from '../engine/cards';
 import {
@@ -18,13 +18,22 @@ import { PLAYER_COLORS, PLAYER_COLOR_NAMES } from '../../ui/format';
 import { FishCard, Egg, Fry, School, CardGlyph } from './FishCard';
 import { FishArt } from './FishArt';
 import { Ocean } from './Ocean';
+import type { SeatRow } from '../online/protocol';
+import { FathomOnlinePanel, FathomRoom, hostFathom } from './FathomOnline';
+import { onlineEnabled } from '../../shell/rooms';
+import { useSession } from '../../cloud';
+
+const OnlineSim = lazy(() => import('./FathomOnlineSim').then((m) => ({ default: m.FathomOnlineSim })));
 
 const LEVEL_LABEL: Record<Level, string> = { easy: 'Easy CPU', normal: 'Normal CPU', hard: 'Hard CPU' };
 
 export function FathomApp() {
-  const { params } = useLocation();
+  const { params, hash } = useLocation();
   const local = params.get('local');
+  const room = params.get('room');
   useEffect(() => { document.title = 'Fathom'; }, []);
+  if (import.meta.env.DEV && hash === '#online-sim') return <Suspense fallback={null}><OnlineSim /></Suspense>;
+  if (room && onlineEnabled && /^[0-9a-f-]{36}$/i.test(room)) return <FathomRoom key={room} id={room} />;
   if (local) return <LocalGame key={local} id={local} />;
   return <Menu />;
 }
@@ -60,6 +69,9 @@ function Menu() {
   const [seats, setSeats] = useState<Seat[]>(loadSeats);
   const [variable, setVariable] = useState(false);
   const [seed, setSeed] = useState('');
+  const session = useSession();
+  const [hosting, setHosting] = useState(false);
+  const [hostErr, setHostErr] = useState<string | null>(null);
   const update = (i: number, patch: Partial<Seat>) => setSeats((x) => x.map((s, j) => (j === i ? { ...s, ...patch } : s)));
   const names = seats.map((s) => s.name.trim());
   const valid = names.every(Boolean) && new Set(names).size === names.length;
@@ -98,6 +110,8 @@ function Menu() {
           </section>
         )}
 
+        <FathomOnlinePanel />
+
         <h2>Players</h2>
         <ol className="seats">
           {seats.map((s, i) => (
@@ -134,8 +148,25 @@ function Menu() {
 
         <div className="start-row">
           <button type="button" className="btn big" disabled={!valid} onClick={start}>Start game</button>
+          {onlineEnabled && (
+            <button type="button" className="btn big ghost" disabled={!valid || hosting || seats[0].kind !== 'human' || seats.length < 2}
+              title="Other Human seats become open seats for friends to join"
+              onClick={async () => {
+                setHosting(true); setHostErr(null);
+                try {
+                  try { localStorage.setItem(SEATS_KEY, JSON.stringify(seats)); } catch { /* fine */ }
+                  const id = await hostFathom(seats.map((x) => ({ ...x, name: x.name.trim() })), variable, !!session);
+                  navigate(`/fathom?room=${id}`);
+                } catch (e) { setHostErr((e as Error).message); } finally { setHosting(false); }
+              }}>
+              {hosting ? 'Opening…' : 'Host online'}
+            </button>
+          )}
         </div>
         {!valid && <p className="warn">Give every player a different name.</p>}
+        {onlineEnabled && valid && seats[0].kind !== 'human' && <p className="muted">To host online, make the first seat yours (Human).</p>}
+        {onlineEnabled && <p className="muted small-print">Online: the first seat is you; other Human seats are left open for friends, who join with the game’s code.</p>}
+        {hostErr && <p className="warn" role="alert">{hostErr}</p>}
         <HowToPlay />
       </div>
     </div>
@@ -181,14 +212,33 @@ const FishGroup = ({ id }: { id: string }) => <foreignObject width="120" height=
 
 interface Entry { s: FState; actor: number | null }
 
-function FathomGame({ id, initial }: { id: string; initial: FState }) {
-  const [hist, setHist] = useState<Entry[]>([{ s: initial, actor: null }]);
+/** What an online game gives the screen: the server's view for your seat and a way to move. */
+export interface FathomOnline {
+  room: string;
+  code: string;
+  /** your seat, or -1 when watching */
+  seat: number;
+  host: boolean;
+  version: number;
+  view: FState;
+  seats: SeatRow[];
+  waiting: number[];
+  send: (a: FAction) => Promise<void>;
+  /** ask the server for the next CPU step at this version */
+  advance: (version: number) => void;
+  setSeat: (seat: number, kind: 'human' | Level) => Promise<void>;
+  forfeit: () => Promise<void>;
+}
+
+export function FathomGame({ id, initial, online }: { id: string; initial: FState; online?: FathomOnline }) {
+  const [hist, setHist] = useState<Entry[]>([{ s: online?.view ?? initial, actor: null }]);
   const s = hist[hist.length - 1].s;
   const over = s.phase === 'over';
   const d = deciderOf(s);
   const dp = s.players[d];
   const humans = s.players.filter((p) => !p.cpu);
-  const [viewer, setViewer] = useState<number | null>(() => (!dp.cpu ? d : humans[0]?.id ?? null));
+  const [localViewer, setViewer] = useState<number | null>(() => (!dp.cpu ? d : humans[0]?.id ?? null));
+  const viewer = online ? (online.seat >= 0 ? online.seat : null) : localViewer;
   const [shown, setShown] = useState<number>(() => viewer ?? 0);
   const [error, setError] = useState<string | null>(null);
   const [cpuSpeed, setCpuSpeed] = useState(700);
@@ -203,9 +253,9 @@ function FathomGame({ id, initial }: { id: string; initial: FState }) {
   const [diving, setDiving] = useState<{ pid: number; col: number } | null>(null);
   const [showOver, setShowOver] = useState(true);
 
-  useEffect(() => { fathomSaves.save(id, s); }, [id, s]);
+  useEffect(() => { if (!online) fathomSaves.save(id, s); }, [id, s, online]);
 
-  const act = useCallback((a: FAction) => {
+  const localAct = useCallback((a: FAction) => {
     setHist((h) => {
       const cur = h[h.length - 1].s;
       try {
@@ -219,18 +269,46 @@ function FathomGame({ id, initial }: { id: string; initial: FState }) {
     });
   }, []);
 
-  // whoever is human and deciding takes the controls, and their ocean comes up
+  // online: moves go to the server, and each newer view it sends becomes the next step
+  const [sending, setSending] = useState(false);
+  const sendRef = useRef(online?.send);
+  sendRef.current = online?.send;
+  const onlineAct = useCallback((a: FAction) => {
+    setSending(true);
+    setError(null);
+    sendRef.current!(a).catch((e) => setError((e as Error).message)).finally(() => setSending(false));
+  }, []);
+  const act = online ? onlineAct : localAct;
+  const onlineView = online?.view;
   useEffect(() => {
-    if (!over && !dp.cpu) { setViewer(d); setShown(d); }
-  }, [d, dp.cpu, over]);
+    if (!onlineView) return;
+    setHist((h) => (h[h.length - 1].s === onlineView ? h : [...h.slice(-60), { s: onlineView, actor: deciderOf(h[h.length - 1].s) }]));
+  }, [onlineView]);
 
-  // CPU turns, paced so you can follow them
+  // whoever is human and deciding takes the controls (online: you), and their ocean comes up
+  useEffect(() => {
+    if (over || dp.cpu) return;
+    if (!online) { setViewer(d); setShown(d); }
+    else if (d === online.seat) setShown(d);
+  }, [d, dp.cpu, over, online?.seat]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // CPU turns, paced so you can follow them. Online the server plays them a step at a time when
+  // asked: the host's screen asks; everyone else only if the host seems to be away.
+  const advanceRef = useRef(online?.advance);
+  advanceRef.current = online?.advance;
+  const onlineVersion = online?.version;
+  const onlineHost = online?.host;
   useEffect(() => {
     if (over || !dp.cpu) return;
     const wait = s.prompt ? Math.min(300, cpuSpeed) : cpuSpeed;
+    if (onlineVersion !== undefined) {
+      const v = onlineVersion;
+      const t = setTimeout(() => advanceRef.current!(v), wait + (onlineHost ? 0 : 6000));
+      return () => clearTimeout(t);
+    }
     const t = setTimeout(() => act(cpuAction(s, dp.cpu!)), wait);
     return () => clearTimeout(t);
-  }, [s, over, dp.cpu, act, cpuSpeed]);
+  }, [s, over, dp.cpu, act, cpuSpeed, onlineVersion, onlineHost]);
 
   // effects: new fish splash, dives sweep their site, tides get a banner, other players' moves a toast
   const prev = useRef(s);
@@ -262,7 +340,7 @@ function FathomGame({ id, initial }: { id: string; initial: FState }) {
   }, [s]);
   useEffect(() => { if (!banner) return; const t = setTimeout(() => setBanner(null), 2600); return () => clearTimeout(t); }, [banner]);
 
-  const myTurn = !over && !dp.cpu && viewer === d;
+  const myTurn = !over && !dp.cpu && viewer === d && !sending;
   const me = viewer !== null ? s.players[viewer] : null;
   const pr: FPrompt | null = myTurn ? s.prompt : null;
   const idle = myTurn && !s.prompt && s.acting === null;
@@ -272,7 +350,7 @@ function FathomGame({ id, initial }: { id: string; initial: FState }) {
 
   const last = hist[hist.length - 1];
   const before = hist[hist.length - 2];
-  const canUndo = !over && !!before && last.actor !== null && !s.players[last.actor].cpu && last.actor === d
+  const canUndo = !online && !over && !!before && last.actor !== null && !s.players[last.actor].cpu && last.actor === d
     && before.s.deck.length === s.deck.length && before.s.players.every((p, i) => p.hand.length <= s.players[i].hand.length || p.id === last.actor);
   const undo = () => setHist((h) => h.slice(0, -1));
 
@@ -307,7 +385,12 @@ function FathomGame({ id, initial }: { id: string; initial: FState }) {
   }
   const moveKinds = pr?.kind === 'move' && moveFrom ? new Set(pr.options.filter((o) => o.move!.from === moveFrom.slot).map((o) => o.move!.what)) : null;
 
-  const forfeitable = over ? [] : s.players.filter((p) => !p.cpu && !p.forfeited).map((p) => ({ id: p.id, name: p.name }));
+  const forfeitable = over ? [] : online
+    ? (me && !me.forfeited && online.seats[me.id]?.kind === 'human' ? [{ id: me.id, name: me.name }] : [])
+    : s.players.filter((p) => !p.cpu && !p.forfeited).map((p) => ({ id: p.id, name: p.name }));
+  const [seatsOpen, setSeatsOpen] = useState(false);
+  const turnDone = !!online && !over && !!me && !me.forfeited && !online.waiting.includes(online.seat) && !sending;
+  const gameKey = online ? `fathom:room:${online.room}` : `fathom:local:${id}`;
   const shownP = s.players[shown];
   const scores = useMemo(() => s.players.map((p) => score(s, p.id).total), [s]);
 
@@ -327,9 +410,14 @@ function FathomGame({ id, initial }: { id: string; initial: FState }) {
               <option value={180}>Fast</option>
             </select>
           </label>
-          <button type="button" className="btn ghost" onClick={undo} disabled={!canUndo} title="Take back your last step (not after a card is drawn)">Undo</button>
+          {online ? (
+            <>
+              <span className="room-code" title="Friends join with this code">Game <b>{online.code}</b></span>
+              {online.host && !over && <button type="button" className="btn ghost" onClick={() => setSeatsOpen(true)}>Seats</button>}
+            </>
+          ) : <button type="button" className="btn ghost" onClick={undo} disabled={!canUndo} title="Take back your last step (not after a card is drawn)">Undo</button>}
           {forfeitable.length > 0 && <button type="button" className="btn ghost" onClick={() => setForfeiting(true)}>Forfeit</button>}
-          <NextGameButton current={`fathom:local:${id}`} />
+          <NextGameButton current={gameKey} turnDone={turnDone} />
           <button type="button" className="btn ghost" onClick={() => navigate('/fathom')}>Menu</button>
         </div>
       </header>
@@ -372,6 +460,8 @@ function FathomGame({ id, initial }: { id: string; initial: FState }) {
               )}
             </div>
           )}
+          {online && viewer === null && <p className="fm-viewing muted">You are watching this game.</p>}
+          {online && me && !over && !myTurn && d !== viewer && <p className="fm-viewing muted" role="status">Waiting on {dp.name}{dp.cpu ? ' (CPU)' : ''}.</p>}
           {shown !== viewer && myTurn && <p className="fm-viewing muted">Looking at {shownP.name}’s ocean. <button type="button" className="linkish" onClick={() => setShown(viewer!)}>Back to yours</button></p>}
           <Ocean p={shownP} selectable={selectable} selected={moveFrom?.slot ?? null} onPick={pick} onInspect={setInspect}
             onDive={idle && shown === viewer && !placing ? (col) => act({ t: 'dive', col }) : null}
@@ -429,9 +519,10 @@ function FathomGame({ id, initial }: { id: string; initial: FState }) {
       )}
       {forfeiting && (
         <ForfeitDialog seats={forfeitable} initial={viewer ?? forfeitable[0]?.id} onClose={() => setForfeiting(false)}
-          consequence={(pid) => forfeitText(s.players, pid, forfeitable.length === 1)}
-          onConfirm={(pid) => setHist((h) => [...h.slice(-60), { s: forfeitState(h[h.length - 1].s, pid), actor: null }])} />
+          consequence={(pid) => forfeitText(s.players, pid, !!online || forfeitable.length === 1)}
+          onConfirm={(pid) => (online ? online.forfeit() : setHist((h) => [...h.slice(-60), { s: forfeitState(h[h.length - 1].s, pid), actor: null }]))} />
       )}
+      {seatsOpen && online && <SeatsDialog s={s} online={online} onClose={() => setSeatsOpen(false)} />}
       {over && showOver && <GameOver s={s} onClose={() => setShowOver(false)} />}
       {over && !showOver && <button type="button" className="btn fm-results-btn" onClick={() => setShowOver(true)}>Final scores</button>}
       {banner && <div key={banner.key} className="fm-tide-banner" role="status"><b>{banner.title}</b>{banner.sub && <span>{banner.sub}</span>}</div>}
@@ -439,6 +530,36 @@ function FathomGame({ id, initial }: { id: string; initial: FState }) {
         {toasts.map((t) => <div key={t.id} className="fm-toast" style={{ ['--pc' as string]: t.color }}>{t.text}</div>)}
       </div>
     </div>
+  );
+}
+
+function SeatsDialog({ s, online, onClose }: { s: FState; online: FathomOnline; onClose: () => void }) {
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const change = async (i: number, kind: 'human' | Level) => {
+    setBusy(true); setErr(null);
+    try { await online.setSeat(i, kind); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
+  };
+  return (
+    <Dialog title="Seats" onClose={onClose}>
+      <p className="muted">If a friend has to drop out, a CPU can play their seat. Hand it back whenever they return.</p>
+      <ul className="online-seats">
+        {online.seats.map((seat, i) => (
+          <li key={i} style={{ ['--pc' as string]: s.players[i].color }}>
+            <span className="swatch" /><span className="seat-name">{seat.name}</span>
+            {i === online.seat ? <span className="muted">You</span> : seat.forfeited || s.players[i].forfeited ? <span className="muted">Forfeited · {LEVEL_LABEL[s.players[i].cpu ?? 'normal']}</span> : (
+              <select value={s.players[i].cpu ?? 'human'} disabled={busy} onChange={(e) => change(i, e.target.value as 'human' | Level)} aria-label={`Who plays ${seat.name}`}>
+                {seat.user && <option value="human">{seat.name} plays</option>}
+                <option value="easy">Easy CPU</option>
+                <option value="normal">Normal CPU</option>
+                <option value="hard">Hard CPU</option>
+              </select>
+            )}
+          </li>
+        ))}
+      </ul>
+      {err && <p className="warn">{err}</p>}
+    </Dialog>
   );
 }
 

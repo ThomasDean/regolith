@@ -14,8 +14,15 @@ export function Root() {
   const { path } = useLocation();
   const session = useSession();
   // a tapped "your move" notification opens its game, wherever you are
-  const openRoom = useCallback((id: string) => navigate(`/regolith?room=${id}`), []);
-  usePwa(session?.user.id, openRoom);
+  const openUrl = useCallback((href: string) => {
+    try {
+      const u = new URL(href, location.origin);
+      if (u.origin !== location.origin) return;
+      // links from before the hub (`/?room=ID`) are Regolith's
+      navigate(u.pathname === '/' && u.searchParams.has('room') ? `/regolith${u.search}` : `${u.pathname}${u.search}`);
+    } catch { /* not a link */ }
+  }, []);
+  usePwa(session?.user.id, openUrl);
   return (
     <Suspense fallback={<div className="loading-screen" role="status"><span>Loading…</span></div>}>
       {under(path, '/regolith') ? <RegolithApp /> : under(path, '/fathom') ? <FathomApp /> : <Home />}

@@ -204,3 +204,60 @@ describe('push subscriptions in the database', () => {
     expect(n.n).toBe(2);
   });
 });
+
+describe('Fathom rooms in the database', () => {
+  const fseats = JSON.stringify([
+    { kind: 'human', name: 'Tom', color: '#e4574a' },
+    { kind: 'open', name: '', color: '#4a9fe4' },
+    { kind: 'hard', name: 'Coral', color: '#5fc07a' },
+  ]);
+  let room = '';
+  let code = '';
+
+  it('opens a room with its goal setting, readable only by its members', async () => {
+    await expect(as(null, `select fathom.create_room($1::jsonb, '{}'::jsonb)`, [fseats])).rejects.toThrow(/permission denied/);
+    const [r] = await as<{ r: { id: string; code: string } }>(HOST, `select fathom.create_room($1::jsonb, '{"variable":true,"junk":1}'::jsonb) as r`, [fseats]);
+    room = r.r.id;
+    code = r.r.code;
+    const [row] = await as<{ settings: unknown; seats: { kind: string }[] }>(HOST, `select settings, seats from fathom.rooms where id = $1`, [room]);
+    expect(row.settings).toEqual({ variable: true });
+    expect(row.seats.map((x) => x.kind)).toEqual(['human', 'open', 'hard']);
+    expect(await as(STRANGER, `select id from fathom.rooms where id = $1`, [room])).toHaveLength(0);
+  });
+
+  it('fills the open seat when a friend joins, and keeps game codes unique across games', async () => {
+    const [j] = await as<{ id: string }>(FRIEND, `select fathom.join_room($1, 'Ann') as id`, [code.toLowerCase()]);
+    expect(j.id).toBe(room);
+    expect(await as(FRIEND, `select id from fathom.rooms where id = $1`, [room])).toHaveLength(1);
+    expect(await as(HOST, `select 1 from regolith.rooms where code = $1`, [code])).toHaveLength(0);
+  });
+
+  it('keeps the game state for the server, which saves only if nobody saved first', async () => {
+    await expect(as(HOST, `select fathom.srv_load($1)`, [room])).rejects.toThrow(/permission denied/);
+    await expect(as(HOST, `select * from fathom.room_states`)).rejects.toThrow(/permission denied/);
+    const [{ v }] = await asService<{ v: number }>(`select (fathom.srv_load($1) -> 'room' ->> 'version')::int as v`, [room]);
+    const save = (version: number) => asService<{ n: number | null }>(
+      `select fathom.srv_save($1, $2, '{"phase":"play"}'::jsonb, '[]'::jsonb, 'playing', 'play', 1, 1, '[1]'::jsonb, null) as n`, [room, version]);
+    expect((await save(v))[0].n).toBe(v + 1);
+    expect((await save(v))[0].n).toBeNull();
+    const [l] = await asService<{ l: { room: { status: string; tide: number }; state: { phase: string } } }>(`select fathom.srv_load($1) as l`, [room]);
+    expect(l.l.room).toMatchObject({ status: 'playing', tide: 1 });
+    expect(l.l.state.phase).toBe('play');
+  });
+
+  it('counts Fathom games on the app badge too, but not a forfeited seat', async () => {
+    const [t] = await asService<{ n: number }>(`select regolith.turns_waiting($1) as n`, [FRIEND]);
+    expect(t.n).toBeGreaterThanOrEqual(1);
+    const row = (await db.query<{ seats: unknown[]; version: number }>(`select seats, version from fathom.rooms where id = $1`, [room])).rows[0];
+    const seatsNow = (row.seats as Record<string, unknown>[]).map((x, i) => (i === 1 ? { ...x, forfeited: true, kind: 'normal' } : x));
+    await asService(`select fathom.srv_save($1, $2, '{}'::jsonb, '[]'::jsonb, 'playing', 'play', 1, 1, '[1]'::jsonb, $3::jsonb)`, [room, row.version, JSON.stringify(seatsNow)]);
+    const [after] = await asService<{ n: number }>(`select regolith.turns_waiting($1) as n`, [FRIEND]);
+    expect(after.n).toBe(t.n - 1);
+  });
+
+  it('closes a lobby when its host leaves', async () => {
+    const [r] = await as<{ r: { id: string } }>(HOST, `select fathom.create_room($1::jsonb) as r`, [fseats]);
+    await as(HOST, `select fathom.leave_room($1)`, [r.r.id]);
+    expect((await db.query(`select id from fathom.rooms where id = $1`, [r.r.id])).rows).toHaveLength(0);
+  });
+});

@@ -12,7 +12,7 @@
     "test": "vitest run",
     "build:artifact": "npm run build:single && node scripts/make-artifact.mjs",
     "build:edge": "node scripts/build-edge.mjs",
-    "deploy:edge": "npm run build:edge && npx supabase@latest functions deploy regolith-play --project-ref hisostfnkralrabcvqxc --no-verify-jwt"
+    "deploy:edge": "npm run build:edge && npx supabase@latest functions deploy regolith-play --project-ref hisostfnkralrabcvqxc --no-verify-jwt && npx supabase@latest functions deploy fathom-play --project-ref hisostfnkralrabcvqxc --no-verify-jwt"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.118.0",

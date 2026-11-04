@@ -3,7 +3,7 @@
 The site is a small hub of board games. `/` is the game picker with **Your games**: every game you have going, online games waiting on you first, then games saved on this device. Each game has its own path:
 
 - **`/regolith`** — Terraforming Mars (below).
-- **`/fathom`** — Fathom, a game that plays like Finspan (see [Fathom](#fathom)).
+- **`/fathom`** — Fathom, a game that plays like Finspan, hotseat or online (see [Fathom](#fathom)).
 
 In any game, **Next game** in the top bar jumps to the next game waiting on you (online games before hotseat ones, longest-waiting first). In an online game it also pops up as soon as your move is in. **Forfeit** gives up a game: a Normal CPU plays your seat out so the others can finish, you rank last, and the game ends at once if only one player, or no human, is left. Online, a forfeited seat can't be handed back, and the game drops off your list.
 
@@ -283,12 +283,19 @@ Scripts:
 
 # Fathom
 
-Fathom plays like Finspan: 1–5 players, hotseat, with Easy, Normal and Hard CPUs. Species are real fish; every number, ability, goal and picture is Fathom's own (art is drawn in code), and nothing from the published game is used. Online play for Fathom isn't built yet; it would follow Regolith's pattern with its own `fathom` schema and referee.
+Fathom plays like Finspan: 1–5 players, hotseat or online, with Easy, Normal and Hard CPUs. Species are real fish; every number, ability, goal and picture is Fathom's own (art is drawn in code), and nothing from the published game is used.
 
 **Rules.** Four tides, six divers each. A turn places one diver to either **release a fish** (pay its cost: discard cards, spend eggs or fry, or eat a smaller fish; put it in a zone and site its card allows; resolve its *Released* ability) or **dive** one of three sites (Kelp, Reef, Open Blue). A dive runs top to bottom: each zone of that site with a fish pays the zone's bonus, every fish passed gives its *Dived* ability, and the first dive to reach the bottom of a site each tide takes its bottom bonus. Eggs (one per fish) hatch into fry; three fry in a slot make a school worth 6. Tides 1–3 end with a goal (classic: Brood, Full rows, Schools; or three drawn from nine, with +3 to each tide's leader). Final score: fish points, 1 per eaten fish, egg and fry, 6 per school, *Game end* abilities and goals; ties go to the most cards in hand. Hands are open, so several humans can share a device.
+
+**Online.** Fathom's menu has the same **Host online** button and **Play online** panel as Regolith (join by code or `/fathom?join=CODE`, sign in with Google or play as a guest, turn alerts). The host sets seats and Classic or Variable goals in the lobby, can hand a seat to a CPU mid-game, and anyone can forfeit. Hands are open in Fathom, so the server only hides the deck order and the seed. Rooms live in their own `fathom` schema (`supabase/migrations/20261104120000_fathom_online.sql`) with the same functions as Regolith's; seat checks are shared with Regolith, game codes are unique across both games, and the app badge counts both. Moves go to the `fathom-play` Edge Function (`server/fathom-edge.ts` around `src/fathom/online/referee.ts`), which reuses Regolith's push devices. Try it without Supabase at `http://localhost:5173/fathom#online-sim` (two humans and a CPU in one tab).
+
+Setting it up (once):
+1. Apply `20261104120000_fathom_online.sql` to the Breakthrough Music dev project (after the Regolith migrations).
+2. **Settings → Data API → Exposed schemas:** add `fathom`.
+3. Deploy the Edge Function: `npm run deploy:edge` now deploys both `regolith-play` and `fathom-play`, and the GitHub workflow does the same on every push to `main` that touches either engine or referee.
 
 **Code.** `src/fathom/engine/` is pure TypeScript: `types.ts`, `cards.ts` (94 fish), `game.ts` (createGame/applyAction, scoring, goals, forfeit), `cpu.ts`, `text.ts` (card wording). `src/fathom/ui/` has the menu and game screen, the ocean grid, cards and the fish illustrations.
 
 **CPUs** try every action on a copy of the game, answer their own follow-up choices the same way, and score the result: points now, plus what each site would yield on the dives still to come, plus the best few cards in hand, fry one short of a school and progress on the tide goals. Easy is noisy and sometimes random; Hard also looks one of its own turns ahead and watches the leader. In 16 two-player games Hard beat Normal 11–5 (148.8 vs 135.0 average); a decision takes about 15 ms.
 
-Tests: `tests/fathom.test.ts` (rules, random full games, CPU games, forfeit). `npx tsx scripts/fathom-sim.ts easy,normal,hard 10 [variable]` plays CPU games; `node scripts/hub-check.mjs http://localhost:4173 <outdir>` clicks through the hub, a Fathom game, next game and forfeit in a browser.
+Tests: `tests/fathom.test.ts` (rules, random full games, CPU games, forfeit), `tests/fathom-online.test.ts` (the referee: whole games from players' views, privacy, seats, forfeit, notices), the Fathom section of `tests/sql.test.ts`, `node scripts/fathom-edge-smoke.mjs` (the built bundle) and `node scripts/fathom-online-sim-check.mjs` (the online screens in a browser, against the dev server). `npx tsx scripts/fathom-sim.ts easy,normal,hard 10 [variable]` plays CPU games; `node scripts/hub-check.mjs http://localhost:4173 <outdir>` clicks through the hub, a Fathom game, next game and forfeit in a browser.

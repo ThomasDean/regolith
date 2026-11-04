@@ -6,3 +6,7 @@ project_id = "regolith"
 # The bundle checks the caller's sign-in itself.
 verify_jwt = false
 entrypoint = "./functions/regolith-play/index.js"
+
+[functions.fathom-play]
+verify_jwt = false
+entrypoint = "./functions/fathom-play/index.js"
