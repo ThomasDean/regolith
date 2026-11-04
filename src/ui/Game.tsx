@@ -14,6 +14,9 @@ import {
 import { ColoniesPanel, TurmoilPanel } from './Expansions';
 import { Board } from './Board';
 import { Card } from './Card';
+import { Coin, FxLine, TempGlyph, TileGlyph } from './Symbols';
+import { cardRows, SP_LINES } from './cardFx';
+import { ResIcon } from './Icons';
 import { Dialog } from './Dialog';
 import { Gauges } from './Gauges';
 import { Players, ResourceGrid } from './Players';
@@ -464,6 +467,9 @@ const SP_EFFECT: Record<StdProject, string> = {
   venus: 'Raise Venus 1 step', colony: 'Place a colony',
 };
 
+/** A card's action as a symbol line, if it has one. */
+const actionLine = (id: string) => cardRows(id).find((r) => r.kind === 'action');
+
 function ActionBar({ s, pid, myTurn, act, panel, setPanel }: { s: GameState; pid: number; myTurn: boolean; act: (a: Action) => void; panel: string | null; setPanel: (p: null | 'projects' | 'sell' | 'confirmPass') => void }) {
   const p = s.players[pid];
   const actions = activeCards(s, pid).filter((c) => c.action);
@@ -473,11 +479,13 @@ function ActionBar({ s, pid, myTurn, act, panel, setPanel }: { s: GameState; pid
     <section className="actionbar" aria-label="Actions">
       <div className="ab-group">
         <h3>Convert</h3>
-        <button type="button" className="btn small" disabled={!myTurn || p.res.plants < greeneryCost(s, pid) || !availableSpaces(s, pid, 'greenery', 'greenery').length} onClick={() => act({ t: 'plants' })}>
-          {greeneryCost(s, pid)} plants → greenery
+        <button type="button" className="btn small sp-btn" disabled={!myTurn || p.res.plants < greeneryCost(s, pid) || !availableSpaces(s, pid, 'greenery', 'greenery').length} onClick={() => act({ t: 'plants' })}
+          aria-label={`${greeneryCost(s, pid)} plants to greenery`} title={`${greeneryCost(s, pid)} plants → greenery`}>
+          <b>{greeneryCost(s, pid)}</b><ResIcon r="plants" size={16} /><span className="fx-arrow" aria-hidden="true">➜</span><TileGlyph tile="greenery" size={17} />
         </button>
-        <button type="button" className="btn small" disabled={!myTurn || heatAvailable(s, pid) < 8 || s.temperature >= maxTemp(s) || p.res.mc < redsTax(s, 1)} onClick={() => act({ t: 'heat' })}>
-          8 heat → {fmtTemp(Math.min(maxTemp(s), s.temperature + 2))}
+        <button type="button" className="btn small sp-btn" disabled={!myTurn || heatAvailable(s, pid) < 8 || s.temperature >= maxTemp(s) || p.res.mc < redsTax(s, 1)} onClick={() => act({ t: 'heat' })}
+          aria-label={`8 heat to raise temperature to ${fmtTemp(Math.min(maxTemp(s), s.temperature + 2))}`} title={`8 heat → ${fmtTemp(Math.min(maxTemp(s), s.temperature + 2))}`}>
+          <b>8</b><ResIcon r="heat" size={16} /><span className="fx-arrow" aria-hidden="true">➜</span><TempGlyph size={17} /><span className="chip-sub">{fmtTemp(Math.min(maxTemp(s), s.temperature + 2))}</span>
         </button>
         {s.turmoil?.ruling === 'reds' && <span className="chip-note warn">Reds rule: 3 M€ per TR you raise</span>}
       </div>
@@ -485,8 +493,13 @@ function ActionBar({ s, pid, myTurn, act, panel, setPanel }: { s: GameState; pid
         <h3>Standard projects</h3>
         <div className="chips">
           {spList(s).map((id) => (
-            <button key={id} type="button" className="btn small" disabled={!myTurn || !canSP(s, pid, id)} title={SP_EFFECT[id]} onClick={() => act({ t: 'sp', id, pay: payHelion(spCost(s, pid, id)) })}>
-              {SP_NAME[id]} <b>{spCost(s, pid, id)}</b>
+            <button key={id} type="button" className="btn small sp-btn" disabled={!myTurn || !canSP(s, pid, id)} title={SP_EFFECT[id]} onClick={() => act({ t: 'sp', id, pay: payHelion(spCost(s, pid, id)) })}
+              aria-label={`${SP_NAME[id]}, ${spCost(s, pid, id)} M€: ${SP_EFFECT[id]}`}>
+              {SP_NAME[id]}
+              <span className="sp-fx" aria-hidden="true">
+                <Coin n={spCost(s, pid, id)} size={20} />
+                {SP_LINES[id] && <><span className="fx-arrow">➜</span><FxLine l={SP_LINES[id]} /></>}
+              </span>
             </button>
           ))}
           <button type="button" className="btn small ghost" disabled={!myTurn || !p.hand.length} onClick={() => setPanel('sell')}>Sell patents</button>
@@ -503,7 +516,7 @@ function ActionBar({ s, pid, myTurn, act, panel, setPanel }: { s: GameState; pid
               return (
                 <button key={c.id} type="button" className="btn small" disabled={!myTurn || !avail} title={c.action!.text}
                   onClick={() => act({ t: 'cardAction', card: c.id, pay: c.action!.mc ? autoPay(s, pid, c.action!.mc, lim) ?? undefined : undefined })}>
-                  {c.name}{used ? ' (used)' : ''}<span className="chip-sub">{c.action!.text}</span>
+                  {c.name}{used ? ' (used)' : ''}<span className="chip-sub">{actionLine(c.id) ? <FxLine l={actionLine(c.id)!} /> : c.action!.text}</span>
                 </button>
               );
             })}

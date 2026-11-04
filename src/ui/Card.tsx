@@ -5,6 +5,8 @@ import { cardCost, cardVP, requirementsMet } from '../engine/queries';
 import { reqText } from './format';
 import { CardArt } from './CardArt';
 import { TagIcon } from './Icons';
+import { CardFx, ReqFx } from './Symbols';
+import { reqIcons } from './cardFx';
 
 interface Props {
   id: string;
@@ -84,8 +86,13 @@ export function Card({ id, s, pid, resources, compact, selected, dim, onClick, f
       </div>
       {!compact && (
         <div className="card-body">
-          {req && <div className={`card-req ${reqOk ? '' : 'unmet'}`}>Needs {req}</div>}
-          {c.startMC !== undefined && <div className="card-req">Starts with {c.startMC} M€</div>}
+          {req && c.req && (
+            <div className={`card-req ${reqOk ? '' : 'unmet'}`} title={`Needs ${req}`}>
+              <span className="card-req-label">{reqOk ? 'Needs' : 'Needs (not met)'}</span>
+              {reqIcons(c.req) ? <ReqFx req={c.req} /> : <span>{req}</span>}
+            </div>
+          )}
+          <CardFx id={id} />
           <p className="card-text">{c.text}</p>
           {c.vpText && <p className="card-vptext">{c.vpText}</p>}
         </div>
