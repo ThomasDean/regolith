@@ -1,4 +1,4 @@
-# Redeploys the online referee (Supabase Edge Function "regolith-play") whenever the rules
+# Redeploys the online referees (Supabase Edge Functions "regolith-play" and "fathom-play") whenever the rules
 # engine or the referee changes on main, so online games always run the same rules as the site.
 # Needs one repository secret, SUPABASE_ACCESS_TOKEN (supabase.com → Account → Access Tokens).
 # Without it the job skips itself.
@@ -9,6 +9,9 @@ on:
     paths:
       - 'src/engine/**'
       - 'src/online/**'
+      - 'src/fathom/engine/**'
+      - 'src/fathom/online/**'
+      - 'src/shell/referee.ts'
       - 'server/**'
       - 'scripts/build-edge.mjs'
       - 'supabase/config.toml'
@@ -33,10 +36,12 @@ jobs:
       - if: env.SUPABASE_ACCESS_TOKEN != ''
         run: npm ci
       - if: env.SUPABASE_ACCESS_TOKEN != ''
-        run: npx vitest run tests/online.test.ts tests/push.test.ts && npm run build:edge && node scripts/edge-smoke.mjs && node scripts/edge-push-smoke.mjs
+        run: npx vitest run tests/online.test.ts tests/push.test.ts tests/fathom-online.test.ts && npm run build:edge && node scripts/edge-smoke.mjs && node scripts/edge-push-smoke.mjs && node scripts/fathom-edge-smoke.mjs
       - uses: supabase/setup-cli@v1
         if: env.SUPABASE_ACCESS_TOKEN != ''
         with: { version: latest }
       - if: env.SUPABASE_ACCESS_TOKEN != ''
         # --yes: newer CLIs ask for confirmation and refuse without a terminal
-        run: supabase functions deploy regolith-play --project-ref "$PROJECT_REF" --no-verify-jwt --yes
+        run: |
+          supabase functions deploy regolith-play --project-ref "$PROJECT_REF" --no-verify-jwt --yes
+          supabase functions deploy fathom-play --project-ref "$PROJECT_REF" --no-verify-jwt --yes

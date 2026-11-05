@@ -6,7 +6,7 @@
 // (Share → Add to Home Screen) and opened from there, on iOS 16.4 or later.
 import { useCallback, useEffect, useState } from 'react';
 import { cloudEnabled, sb } from './cloud';
-import { myRooms } from './online/client';
+import { allRooms, roomWaitsOn } from './shell/active';
 import type { PushKeyReply } from './online/protocol';
 
 /** Registers the offline/push service worker. Only on the deployed site, not in dev or the single-file build. */
@@ -41,11 +41,8 @@ export function setBadge(n: number) {
 /** Sets the Home Screen badge to the number of your games that are waiting on you. */
 export async function refreshBadge(uid: string) {
   try {
-    const rooms = await myRooms();
-    setBadge(rooms.filter((r) => {
-      const mine = r.seats.findIndex((x) => x.user === uid);
-      return r.status === 'playing' && mine >= 0 && r.waiting.includes(mine);
-    }).length);
+    const rooms = await allRooms();
+    setBadge(rooms.filter((r) => roomWaitsOn(r, uid)).length);
   } catch { /* try again next time */ }
 }
 
@@ -151,17 +148,16 @@ export const roomFromUrl = (href: string = location.href): string | null => {
  * Runs while a player is signed in: renews this device's push subscription, keeps the badge
  * right, and switches to a game when a notification is tapped while the app is open.
  */
-export function usePwa(uid: string | undefined, openRoom: (id: string) => void) {
+export function usePwa(uid: string | undefined, openUrl: (url: string) => void) {
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
     const onMessage = (e: MessageEvent) => {
       if (e.data?.type !== 'open-url') return;
-      const id = roomFromUrl(e.data.url);
-      if (id) openRoom(id);
+      if (typeof e.data.url === 'string') openUrl(e.data.url);
     };
     navigator.serviceWorker.addEventListener('message', onMessage);
     return () => navigator.serviceWorker.removeEventListener('message', onMessage);
-  }, [openRoom]);
+  }, [openUrl]);
 
   useEffect(() => {
     if (!uid || !cloudEnabled) return;

@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { regolithSaves, migrateLegacySave } from '../ui/saves';
 import { fathomSaves } from '../fathom/saves';
 import { myRooms, onlineEnabled } from '../online/client';
-import type { RoomRow } from '../online/protocol';
+import { fathomRooms } from '../fathom/online/client';
+import { mySeat, roomWaitsOn, type BaseRoom } from './rooms';
 import { SAVES_EVENT, type LocalStore } from './localSaves';
 import { GAME_INFO, type GameId } from './gameInfo';
 
@@ -35,27 +36,33 @@ export function localActive(): ActiveGame[] {
   })));
 }
 
-/** Your seat in an online room, or -1. */
-export const mySeat = (r: RoomRow, uid: string) => r.seats.findIndex((x) => x.user === uid);
+export { mySeat, roomWaitsOn };
 
-export function roomWaitsOn(r: RoomRow, uid: string): boolean {
-  const i = mySeat(r, uid);
-  return r.status === 'playing' && i >= 0 && !r.seats[i].forfeited && r.waiting.includes(i);
-}
+/** An online room of either game, tagged with its game. */
+export type AnyRoom = BaseRoom & { game: GameId; generation?: number | null; tide?: number | null };
 
-export function onlineActive(rooms: RoomRow[], uid: string): ActiveGame[] {
+export function onlineActive(rooms: AnyRoom[], uid: string): ActiveGame[] {
   return rooms.filter((r) => {
     const i = mySeat(r, uid);
     if (r.status === 'over') return false;
-    // a game you forfeited is no longer yours to play; a lobby you were dropped from isn't either
+    // a game you forfeited is no longer yours to play
     if (i >= 0 && r.seats[i].forfeited) return false;
     return i >= 0 || r.host === uid;
   }).map((r) => ({
-    key: `regolith:room:${r.id}`, game: 'regolith' as const, kind: 'online' as const, href: `/regolith?room=${r.id}`,
-    title: r.status === 'lobby' ? `Lobby ${r.code}` : `Generation ${r.generation ?? 1} · online`,
+    key: `${r.game}:room:${r.id}`, game: r.game, kind: 'online' as const, href: `${GAME_INFO[r.game].path}?room=${r.id}`,
+    title: r.status === 'lobby' ? `Lobby ${r.code}` : r.game === 'fathom' ? `Tide ${r.tide ?? 1} of 4 · online` : `Generation ${r.generation ?? 1} · online`,
     players: r.seats.map((x) => x.name || 'open seat').join(', '),
     yourMove: roomWaitsOn(r, uid), lobby: r.status === 'lobby', updated: new Date(r.updated_at).getTime(),
   }));
+}
+
+/** Every online room you're in, across games. A game whose server isn't set up yet just adds nothing. */
+export async function allRooms(): Promise<AnyRoom[]> {
+  const [a, b] = await Promise.all([
+    myRooms().then((xs) => xs.map((r) => ({ ...r, game: 'regolith' as const })), () => [] as AnyRoom[]),
+    fathomRooms.myRooms().then((xs) => xs.map((r) => ({ ...r, game: 'fathom' as const })), () => [] as AnyRoom[]),
+  ]);
+  return [...a, ...b];
 }
 
 /**
@@ -80,7 +87,7 @@ const POLL_MS = 30_000;
  */
 export function useActiveGames(uid: string | undefined | null, bump: unknown = 0): { games: ActiveGame[]; loaded: boolean; refresh: () => void } {
   const [local, setLocal] = useState<ActiveGame[]>(localActive);
-  const [rooms, setRooms] = useState<RoomRow[] | null>(null);
+  const [rooms, setRooms] = useState<AnyRoom[] | null>(null);
   const [tick, setTick] = useState(0);
   const refresh = useCallback(() => { setLocal(localActive()); setTick((t) => t + 1); }, []);
 
@@ -97,7 +104,7 @@ export function useActiveGames(uid: string | undefined | null, bump: unknown = 0
     if (!uid || !onlineEnabled) { setRooms([]); return; }
     let live = true;
     // a short delay after a move lets the server's room row catch up
-    const t = setTimeout(() => myRooms().then((r) => { if (live) setRooms(r); }, () => { if (live) setRooms((x) => x ?? []); }), 600);
+    const t = setTimeout(() => allRooms().then((r) => { if (live) setRooms(r); }, () => { if (live) setRooms((x) => x ?? []); }), 600);
     return () => { live = false; clearTimeout(t); };
   }, [uid, tick, bump]);
 

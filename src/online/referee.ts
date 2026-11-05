@@ -13,6 +13,9 @@ import { decider } from '../engine/moves';
 import { HIDDEN, type PlayReply, type PlayRequest, type RoomRow, type SeatRow } from './protocol';
 import { BOARD_IDS, type BoardId } from '../engine/board';
 import { availability, maDef } from '../engine/ma';
+import { HttpError, type Notice } from '../shell/referee';
+
+export { HttpError, type Notice };
 
 export interface Loaded { room: RoomRow; state: GameState | null; pending: Record<string, Action> }
 
@@ -28,30 +31,12 @@ export interface SavePatch {
   seats: SeatRow[] | null;
 }
 
-/** Something worth a push notification, for the players listed (user ids). */
-export interface Notice {
-  room: string;
-  users: string[];
-  title: string;
-  body: string;
-  /** one notification per game: a newer one replaces the older */
-  tag: string;
-}
-
 export interface Store {
   load(room: string): Promise<Loaded | null>;
   /** Saves if the room is still at `version`; returns the new version, or null if it moved on. */
   save(room: string, version: number, patch: SavePatch): Promise<number | null>;
   /** Optional: tells players it's their move. Best effort; must never make the move itself fail. */
   notify?(notice: Notice): void | Promise<void>;
-}
-
-export class HttpError extends Error {
-  status: number;
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
 }
 
 const LEVELS: Level[] = ['easy', 'normal', 'hard'];
