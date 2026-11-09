@@ -18,6 +18,7 @@ import { Coin, FxLine, TempGlyph, TileGlyph } from './Symbols';
 import { cardRows, SP_LINES } from './cardFx';
 import { ResIcon } from './Icons';
 import { Dialog } from './Dialog';
+import { HowToPlay } from './HowToPlay';
 import { Gauges } from './Gauges';
 import { Players, ResourceGrid } from './Players';
 import { fmtTemp, RES_LABEL } from './format';
@@ -234,6 +235,8 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
 
   // forfeit: online, your own seat; at one device, any human still playing
   const [forfeiting, setForfeiting] = useState(false);
+  const [help, setHelp] = useState(false);
+  const hasExpansions = Object.values(s.options.expansions ?? {}).some(Boolean);
   const forfeitable = over ? [] : online
     ? (me && !me.forfeited && online.seats[me.id]?.kind === 'human' ? [{ id: me.id, name: me.name }] : [])
     : s.players.filter((p) => !p.cpu && !p.forfeited).map((p) => ({ id: p.id, name: p.name }));
@@ -277,6 +280,7 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
           ) : (
             <button type="button" className="btn ghost" onClick={undo} disabled={!canUndo} title="Undo your last step (not after cards are drawn)">Undo</button>
           )}
+          {hasExpansions && <button type="button" className="btn ghost" onClick={() => setHelp(true)} title="How to play this game's expansions">How to play</button>}
           {forfeitable.length > 0 && <button type="button" className="btn ghost" onClick={() => setForfeiting(true)}>Forfeit</button>}
           <NextGameButton current={gameKey} turnDone={turnDone} />
           <button type="button" className="btn ghost" onClick={onExit}>Menu</button>
@@ -330,8 +334,8 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
           <button type="button" className="btn big" onClick={() => setViewer(decider)}>I'm {dp.name}, show my hand</button>
         </Dialog>
       )}
-      {picking && !sending && s.phase === 'setup' && <SetupDialog s={s} pid={online ? viewer! : decider} act={act} />}
-      {picking && !sending && s.phase === 'research' && !s.prompt && <ResearchDialog s={s} pid={online ? viewer! : decider} act={act} />}
+      {picking && !sending && s.phase === 'setup' && <SetupDialog s={s} pid={online ? viewer! : decider} act={act} onHelp={hasExpansions ? () => setHelp(true) : undefined} />}
+      {picking && !sending && s.phase === 'research' && !s.prompt && <ResearchDialog s={s} pid={online ? viewer! : decider} act={act} onHelp={hasExpansions ? () => setHelp(true) : undefined} />}
       {canAct && s.phase === 'prelude' && !s.prompt && !s.pendingAction && <PreludeDialog s={s} pid={decider} act={act} />}
       {seatsOpen && online && <SeatsDialog s={s} online={online} onClose={() => setSeatsOpen(false)} />}
       {pr && pr.kind !== 'space' && <PromptDialog s={s} pr={pr} act={act} />}
@@ -342,6 +346,7 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
         <ForfeitDialog seats={forfeitable} initial={viewer ?? decider} onClose={() => setForfeiting(false)} onConfirm={doForfeit}
           consequence={(id) => forfeitText(s.players, id, !!online || forfeitable.length === 1)} />
       )}
+      {help && <HowToPlay onClose={() => setHelp(false)} inGame={s.options.expansions} />}
       {over && <GameOver s={s} onExit={onExit} />}
       {over && fxOn && <Confetti colors={s.players.map((p) => p.color)} />}
       {show && <CardShowcase key={show.key} show={show} s={s} onDone={endShow} fast={cpuSpeed <= 120} />}
@@ -595,7 +600,7 @@ function SellDialog({ s, pid, onClose, act }: { s: GameState; pid: number; onClo
 }
 
 // ---------------- setup & research ----------------
-function SetupDialog({ s, pid, act }: { s: GameState; pid: number; act: (a: Action) => void }) {
+function SetupDialog({ s, pid, act, onHelp }: { s: GameState; pid: number; act: (a: Action) => void; onHelp?: () => void }) {
   const p = s.players[pid];
   const su = p.setup!;
   const [corp, setCorp] = useState(su.corps[0]);
@@ -630,11 +635,12 @@ function SetupDialog({ s, pid, act }: { s: GameState; pid: number; act: (a: Acti
       <div className="pick-grid">
         {su.cards.map((id, i) => <Card key={id} id={id} index={i + 2} selected={beginner || keep.includes(id)} onClick={beginner ? undefined : () => toggle(id)} />)}
       </div>
+      {onHelp && <HelpLink onHelp={onHelp} />}
     </Dialog>
   );
 }
 
-function ResearchDialog({ s, pid, act }: { s: GameState; pid: number; act: (a: Action) => void }) {
+function ResearchDialog({ s, pid, act, onHelp }: { s: GameState; pid: number; act: (a: Action) => void; onHelp?: () => void }) {
   const p = s.players[pid];
   const [keep, setKeep] = useState<string[]>([]);
   const toggle = (id: string) => setKeep((x) => (x.includes(id) ? x.filter((y) => y !== id) : [...x, id]));
@@ -653,9 +659,14 @@ function ResearchDialog({ s, pid, act }: { s: GameState; pid: number; act: (a: A
       <details className="hand-peek"><summary>Your hand ({p.hand.length})</summary>
         <div className="pick-grid">{p.hand.map((id) => <Card key={id} id={id} s={s} pid={pid} compact />)}</div>
       </details>
+      {onHelp && <HelpLink onHelp={onHelp} />}
     </Dialog>
   );
 }
+
+const HelpLink = ({ onHelp }: { onHelp: () => void }) => (
+  <p className="htp-link"><button type="button" className="linkish" onClick={onHelp}>How to play this game’s expansions</button></p>
+);
 
 function PreludeDialog({ s, pid, act }: { s: GameState; pid: number; act: (a: Action) => void }) {
   const p = s.players[pid];

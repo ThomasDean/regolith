@@ -1,10 +1,11 @@
 // Game setup: map choice and the milestone/award picker (the map's own set, a balanced random
 // draw, or any mix with the players' own picks locked in).
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { BOARD_IDS, BOARDS, type BoardId } from '../engine/board';
 import { AWARDS, BALANCED, MILESTONES, availability, boardMA, drawMA, maDef, selectionIssues, type MADef, type MASelection } from '../engine/ma';
 import { EXPANSIONS, type Expansion, type Expansions } from '../engine/types';
 import { EXPANSION_LABEL } from './format';
+import { HowToPlay } from './HowToPlay';
 
 export interface MAState {
   sel: MASelection;
@@ -32,15 +33,20 @@ const EXPANSION_BLURB: Record<Expansion, string> = {
 };
 
 export function ExpansionPicker({ ex, onChange, disabled }: { ex: Expansions; onChange: (ex: Expansions) => void; disabled?: boolean }) {
+  const [help, setHelp] = useState(false);
   return (
-    <div className="exp-pick" role="group" aria-label="Expansions">
-      {EXPANSIONS.map((e) => (
-        <label key={e} className={`exp-opt ${ex[e] ? 'on' : ''}`}>
-          <input type="checkbox" checked={!!ex[e]} disabled={disabled} onChange={(ev) => onChange({ ...ex, [e]: ev.target.checked })} />
-          <span><b>{EXPANSION_LABEL[e]}</b><small>{EXPANSION_BLURB[e]}</small></span>
-        </label>
-      ))}
-    </div>
+    <>
+      <div className="exp-pick" role="group" aria-label="Expansions">
+        {EXPANSIONS.map((e) => (
+          <label key={e} className={`exp-opt ${ex[e] ? 'on' : ''}`}>
+            <input type="checkbox" checked={!!ex[e]} disabled={disabled} onChange={(ev) => onChange({ ...ex, [e]: ev.target.checked })} />
+            <span><b>{EXPANSION_LABEL[e]}</b><small>{EXPANSION_BLURB[e]}</small></span>
+          </label>
+        ))}
+      </div>
+      <p className="htp-link"><button type="button" className="linkish" onClick={() => setHelp(true)}>How to play the expansions</button></p>
+      {help && <HowToPlay onClose={() => setHelp(false)} inGame={ex} />}
+    </>
   );
 }
 
