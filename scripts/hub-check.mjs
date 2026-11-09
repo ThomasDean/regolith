@@ -27,6 +27,13 @@ await shot('03-fathom-start');
 let released = 0, dives = 0;
 for (let step = 0; step < 120; step++) {
   if (await p.locator('.dialog[aria-label$="wins"]').count()) break;
+  // the end-of-tide count: skip it, then continue
+  if (await p.locator('.fm-recap').count()) {
+    await shot('05a-fathom-tide-recap');
+    await p.locator('.recap-foot .btn').click();
+    await p.waitForTimeout(150);
+    continue;
+  }
   const skip = p.locator('.fm-banner button', { hasText: 'Skip' });
   const can = p.locator('.slot.can');
   if (await p.locator('.dialog').count()) {
