@@ -15,11 +15,15 @@ import { NextGameButton } from '../../shell/NextGame';
 import { ForfeitDialog, forfeitText } from '../../shell/Forfeit';
 import { Dialog } from '../../ui/Dialog';
 import { PLAYER_COLORS, PLAYER_COLOR_NAMES } from '../../ui/format';
-import { FishCard, Egg, Fry, School, CardGlyph } from './FishCard';
+import { FishCard, Egg, Fry, School, CardGlyph, EndGlyph } from './FishCard';
 import { FishArt } from './FishArt';
 import { Ocean } from './Ocean';
 import type { SeatRow } from '../online/protocol';
 import { FathomOnlinePanel, FathomRoom, hostFathom } from './FathomOnline';
+import { CardHow, RulesGuide } from './Guide';
+import { HandDock, HandSheet } from './HandSheet';
+import { TideRecap } from './TideRecap';
+import { GoalIcon } from './GoalArt';
 import { onlineEnabled } from '../../shell/rooms';
 import { useSession } from '../../cloud';
 
@@ -174,9 +178,13 @@ function Menu() {
 }
 
 function HowToPlay() {
+  const [open, setOpen] = useState(false);
   return (
-    <details className="fm-rules">
-      <summary>How to play</summary>
+    <section className="fm-rules">
+      <div className="fm-rules-head">
+        <h2>How to play</h2>
+        <button type="button" className="btn small" onClick={() => setOpen(true)}>Full illustrated rules</button>
+      </div>
       <p>The game lasts <b>{TIDES} tides</b>. Each tide everyone places <b>{DIVERS} divers</b>, one per turn. With each diver you either:</p>
       <ul>
         <li><b>Release a fish</b> from your hand into your ocean, paying its cost (discarding cards, spending eggs or fry, or eating a smaller fish). It must go in a zone shown on its card, and in its site if it has one. Its <i>Released</i> ability happens at once.</li>
@@ -184,7 +192,8 @@ function HowToPlay() {
       </ul>
       <p>A fish can only eat (cover) a smaller one. Eaten fish stay underneath and score 1 point each; eggs and fry on them pass to the new fish’s slot. Eggs hatch into fry, and three fry in one slot form a <b>school</b>, worth {SCHOOL_PTS}.</p>
       <p>At the end of tides 1–3 the tide’s goal scores. After tide {TIDES}: fish points, 1 per eaten fish, egg and fry, {SCHOOL_PTS} per school, and every <i>Game end</i> ability. Ties go to the most cards in hand.</p>
-    </details>
+      {open && <Dialog title="How to play Fathom" wide onClose={() => setOpen(false)}><RulesGuide /></Dialog>}
+    </section>
   );
 }
 
@@ -248,7 +257,10 @@ export function FathomGame({ id, initial, online }: { id: string; initial: FStat
   const [moveFrom, setMoveFrom] = useState<{ slot: number; what: 'fry' | 'school' } | null>(null);
   const [forfeiting, setForfeiting] = useState(false);
   const [toasts, setToasts] = useState<{ id: number; text: string; color: string }[]>([]);
-  const [banner, setBanner] = useState<{ key: number; title: string; sub: string } | null>(null);
+  const [recap, setRecap] = useState<{ key: number; tide: number; s: FState } | null>(null);
+  const closeRecap = useCallback(() => setRecap(null), []);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [handOpen, setHandOpen] = useState(false);
   const [fresh, setFresh] = useState<number[]>([]);
   const [diving, setDiving] = useState<{ pid: number; col: number } | null>(null);
   const [showOver, setShowOver] = useState(true);
@@ -299,7 +311,7 @@ export function FathomGame({ id, initial, online }: { id: string; initial: FStat
   const onlineVersion = online?.version;
   const onlineHost = online?.host;
   useEffect(() => {
-    if (over || !dp.cpu) return;
+    if (over || !dp.cpu || recap) return;
     const wait = s.prompt ? Math.min(300, cpuSpeed) : cpuSpeed;
     if (onlineVersion !== undefined) {
       const v = onlineVersion;
@@ -308,9 +320,9 @@ export function FathomGame({ id, initial, online }: { id: string; initial: FStat
     }
     const t = setTimeout(() => act(cpuAction(s, dp.cpu!)), wait);
     return () => clearTimeout(t);
-  }, [s, over, dp.cpu, act, cpuSpeed, onlineVersion, onlineHost]);
+  }, [s, over, dp.cpu, act, cpuSpeed, onlineVersion, onlineHost, recap]);
 
-  // effects: new fish splash, dives sweep their site, tides get a banner, other players' moves a toast
+  // effects: new fish splash, dives sweep their site, tides get their goal count, other players' moves a toast
   const prev = useRef(s);
   const key = useRef(0);
   useEffect(() => {
@@ -325,9 +337,9 @@ export function FathomGame({ id, initial, online }: { id: string; initial: FStat
       setDiving(dv);
       setTimeout(() => setDiving((x) => (x === dv ? null : x)), 900);
     }
-    if (s.tide !== a.tide && s.phase !== 'over') {
-      const g = s.goals[s.tide - 2];
-      setBanner({ key: ++key.current, title: `Tide ${s.tide}`, sub: g ? `${GOALS[g].name}: ${s.players.map((p) => `${p.name} +${p.goals[s.tide - 2] ?? 0}`).join(' · ')}` : '' });
+    // a tide with a goal just ended: count it up, then show what's next
+    if (s.tide > a.tide && s.phase !== 'over' && s.goals[s.tide - 2]) {
+      setRecap({ key: ++key.current, tide: s.tide - 1, s });
     }
     const added = Math.max(0, s.log.length - a.log.length) || (a.log[a.log.length - 1] !== s.log[s.log.length - 1] ? 1 : 0);
     for (const e of s.log.slice(s.log.length - added).slice(-3)) {
@@ -338,7 +350,6 @@ export function FathomGame({ id, initial, online }: { id: string; initial: FStat
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s]);
-  useEffect(() => { if (!banner) return; const t = setTimeout(() => setBanner(null), 2600); return () => clearTimeout(t); }, [banner]);
 
   const myTurn = !over && !dp.cpu && viewer === d && !sending;
   const me = viewer !== null ? s.players[viewer] : null;
@@ -417,6 +428,7 @@ export function FathomGame({ id, initial, online }: { id: string; initial: FStat
             </>
           ) : <button type="button" className="btn ghost" onClick={undo} disabled={!canUndo} title="Take back your last step (not after a card is drawn)">Undo</button>}
           {forfeitable.length > 0 && <button type="button" className="btn ghost" onClick={() => setForfeiting(true)}>Forfeit</button>}
+          <button type="button" className="btn ghost" onClick={() => setRulesOpen(true)} title="How to play">Rules</button>
           <NextGameButton current={gameKey} turnDone={turnDone} />
           <button type="button" className="btn ghost" onClick={() => navigate('/fathom')}>Menu</button>
         </div>
@@ -439,6 +451,7 @@ export function FathomGame({ id, initial, online }: { id: string; initial: FStat
           </button>
         ))}
       </nav>
+      <CurrentGoal s={s} viewer={viewer} />
 
       <main className="fm-table">
         <section className="fm-main">
@@ -468,7 +481,10 @@ export function FathomGame({ id, initial, online }: { id: string; initial: FStat
             fresh={fresh} diving={diving && diving.pid === shown ? diving.col : null} />
 
           <section className="fm-hand" aria-label={`${shownP.name}'s hand`}>
-            <h3>{shown === viewer ? 'Your hand' : `${shownP.name}’s hand`} <span className="muted">· {shownP.hand.length} · discard pile {shownP.discard.length}</span></h3>
+            <div className="fm-hand-head">
+              <h3>{shown === viewer ? 'Your hand' : `${shownP.name}’s hand`} <span className="muted">· {shownP.hand.length} · discard pile {shownP.discard.length}</span></h3>
+              {shownP.hand.length > 0 && <button type="button" className="btn ghost small" onClick={() => setHandOpen(true)}>View all</button>}
+            </div>
             {shownP.hand.length === 0 && <p className="muted">No cards. Dive a site whose bonuses draw cards.</p>}
             <div className="fm-hand-row">
               {shownP.hand.map((c) => {
@@ -492,12 +508,12 @@ export function FathomGame({ id, initial, online }: { id: string; initial: FStat
       {inspect && (
         <Dialog title={FISH[inspect].name} onClose={() => setInspect(null)} footer={
           me && idle && shown === viewer && me.hand.includes(inspect) ? (
-            <button type="button" className="btn" disabled={!canAfford(me, inspect)} onClick={() => { setPlacing(inspect); setInspect(null); }}>
+            <button type="button" className="btn" disabled={!canAfford(me, inspect)} onClick={() => { setPlacing(inspect); setInspect(null); setHandOpen(false); }}>
               {canAfford(me, inspect) ? 'Release this fish' : whyNot(me, inspect)}
             </button>
           ) : undefined
         }>
-          <div className="fm-inspect"><FishCard id={inspect} /></div>
+          <div className="fm-inspect"><FishCard id={inspect} /><CardHow id={inspect} /></div>
           {me && idle && me.hand.includes(inspect) && canAfford(me, inspect) && <p className="muted">Then tap a highlighted slot in your ocean.</p>}
         </Dialog>
       )}
@@ -525,7 +541,14 @@ export function FathomGame({ id, initial, online }: { id: string; initial: FStat
       {seatsOpen && online && <SeatsDialog s={s} online={online} onClose={() => setSeatsOpen(false)} />}
       {over && showOver && <GameOver s={s} onClose={() => setShowOver(false)} />}
       {over && !showOver && <button type="button" className="btn fm-results-btn" onClick={() => setShowOver(true)}>Final scores</button>}
-      {banner && <div key={banner.key} className="fm-tide-banner" role="status"><b>{banner.title}</b>{banner.sub && <span>{banner.sub}</span>}</div>}
+      {!over && !handOpen && <HandDock p={shownP} mine={shown === viewer} canRelease={shown === viewer && idle} onOpen={() => setHandOpen(true)} />}
+      {handOpen && (
+        <HandSheet p={shownP} mine={shown === viewer} canRelease={shown === viewer && idle} onClose={() => setHandOpen(false)}
+          onInspect={(c) => setInspect(c)}
+          onRelease={(c) => { setHandOpen(false); setPlacing(c); }} />
+      )}
+      {rulesOpen && <Dialog title="How to play Fathom" wide onClose={() => setRulesOpen(false)}><RulesGuide goals={s.goals} /></Dialog>}
+      {recap && <TideRecap key={recap.key} s={recap.s} tide={recap.tide} onClose={closeRecap} />}
       <div className="fm-toasts" aria-live="polite">
         {toasts.map((t) => <div key={t.id} className="fm-toast" style={{ ['--pc' as string]: t.color }}>{t.text}</div>)}
       </div>
@@ -654,6 +677,21 @@ function Goals({ s }: { s: FState }) {
         })}
       </ol>
     </section>
+  );
+}
+
+/** The goal this tide is racing toward, always in view (the side panel is far down on phones). */
+function CurrentGoal({ s, viewer }: { s: FState; viewer: number | null }) {
+  if (s.phase === 'over') return null;
+  const g = s.goals[s.tide - 1];
+  if (!g) return <div className="fm-goal-pill final"><EndGlyph size={20} /><span><b>Tide {s.tide}: the last tide</b> <span className="muted">· No goal. Final scoring when it ends.</span></span></div>;
+  const me = viewer !== null ? s.players[viewer] : null;
+  return (
+    <div className="fm-goal-pill">
+      <GoalIcon id={g} size={26} />
+      <span className="txt"><b>Tide {s.tide} goal: {GOALS[g].name}</b> <span className="muted">· {GOALS[g].text}</span></span>
+      {me && <span className="you">{me.name.trim().toLowerCase() === 'you' ? 'You' : me.name}: <b>{goalPoints(me, g)}</b> so far</span>}
+    </div>
   );
 }
 
