@@ -282,8 +282,13 @@ select, input:not([type]), input[type='text'] {
   transform: perspective(700px) translateY(var(--lift)) rotateX(var(--rx)) rotateY(var(--ry));
   transition: transform 0.18s ease-out, box-shadow 0.2s, filter 0.2s;
 }
-button.card { cursor: pointer; }
-button.card:hover { --lift: -4px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 12px 24px rgba(0, 0, 0, 0.42); }
+button.card { cursor: pointer; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+/* Hover effects only where a pointer really hovers: touch browsers keep :hover stuck on the
+   last tapped card, which used to paint over its selection ring until another card was tapped. */
+@media (hover: hover) {
+  button.card:hover { --lift: -4px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 12px 24px rgba(0, 0, 0, 0.42); }
+  .card.dim:hover { filter: saturate(0.7) brightness(0.92); }
+}
 .card.tilt::after {
   content: ''; position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity 0.2s;
   background: radial-gradient(circle at var(--mx, 50%) var(--my, 30%), rgba(255, 255, 255, 0.32), transparent 48%);
@@ -293,12 +298,11 @@ button.card:hover { --lift: -4px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 12
 .card-active { --band: #2c5d8f; }
 .card-event { --band: #a3341f; }
 .card-corp { --band: #866012; background: #efe6d1; }
-.card.selected {
+.card.selected, button.card.selected:hover {
   --lift: -6px;
   box-shadow: 0 0 0 3px var(--focus), 0 0 22px rgba(242, 212, 138, 0.55), 0 12px 24px rgba(0, 0, 0, 0.4);
 }
 .card.dim { filter: saturate(0.35) brightness(0.82); }
-.card.dim:hover { filter: saturate(0.7) brightness(0.92); }
 .card-art { position: relative; aspect-ratio: 160 / 84; background: #10182a; flex: none; }
 .card.compact .card-art { aspect-ratio: 160 / 54; }
 .card-art-svg { display: block; width: 100%; height: 100%; }
@@ -717,3 +721,37 @@ fieldset.plain { border: 0; margin: 0; padding: 0; min-width: 0; display: grid; 
 .sp-fx { display: inline-flex; align-items: center; gap: 4px; margin-top: 3px; }
 .sp-fx .fx-arrow { font-size: 0.85rem; color: #b8321f; }
 .chips .btn .chip-sub .fx-inline { margin-top: 2px; }
+
+/* ---------- how to play the expansions ---------- */
+.htp-link, .dialog-body .htp-link { margin: 8px 0 0; font-size: 0.85rem; }
+.htp { display: grid; gap: 12px; }
+.htp-tabs { display: flex; flex-wrap: wrap; gap: 6px; position: sticky; top: -4px; z-index: 1; background: var(--panel); padding: 4px 0 6px; margin-top: -4px; }
+.htp-tab {
+  background: var(--panel-2); color: var(--text); border: 0; border-radius: var(--radius-s); padding: 7px 12px; cursor: pointer;
+  font: 600 0.9rem var(--display); box-shadow: inset 0 0 0 1px var(--line); -webkit-tap-highlight-color: transparent;
+}
+.htp-tab small { font: 400 0.68rem var(--body); color: var(--muted); }
+.htp-tab.on { box-shadow: inset 0 0 0 2px var(--dust); background: color-mix(in srgb, var(--dust) 16%, var(--panel-2)); }
+.htp-tab:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+@media (hover: hover) { .htp-tab:not(.on):hover { box-shadow: inset 0 0 0 1px var(--dust); } }
+.htp-panel { line-height: 1.45; max-width: 72ch; }
+.htp-panel h3 { margin: 14px 0 4px; }
+.htp-panel ul, .htp-panel ol { margin: 0; padding-left: 20px; display: grid; gap: 3px; }
+.htp-panel .htp-lede { margin: 0 0 4px; font-size: 1rem; }
+.htp-panel .htp-order { margin-top: 16px; }
+.htp-more { margin-top: 12px; }
+.htp-more summary { cursor: pointer; font-weight: 600; }
+.htp-tiles { margin-top: 6px !important; font-size: 0.85rem; }
+.htp-parties { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.htp-parties th, .htp-parties td { text-align: left; vertical-align: top; padding: 5px 8px 5px 0; border-bottom: 1px solid var(--line); }
+.htp-parties thead th { color: var(--muted); font-weight: 600; font-size: 0.75rem; }
+.htp-parties tbody th { white-space: nowrap; }
+.htp-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4); }
+@media (max-width: 560px) {
+  .htp-parties, .htp-parties tbody, .htp-parties tr, .htp-parties td, .htp-parties tbody th { display: block; }
+  .htp-parties thead { display: none; }
+  .htp-parties tr { padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .htp-parties th, .htp-parties td { border: 0; padding: 1px 0; }
+  .htp-parties td:nth-of-type(1)::before { content: 'Bonus: '; color: var(--muted); }
+  .htp-parties td:nth-of-type(2)::before { content: 'Policy: '; color: var(--muted); }
+}
