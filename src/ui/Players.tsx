@@ -24,6 +24,22 @@ export function ResourceGrid({ s, pid }: { s: GameState; pid: number }) {
   );
 }
 
+/** Your own resources, production, TR and VP, pinned to the top of the screen. */
+export function MeBar({ s, pid }: { s: GameState; pid: number }) {
+  const p = s.players[pid];
+  const sc = score(s, p.id);
+  return (
+    <div className="mebar" style={{ ['--pc' as string]: p.color }} aria-label="Your resources">
+      <div className="mebar-stats">
+        <span className="mebar-stat" title="Terraform rating"><TrIcon /> <b><Num value={p.tr} /></b><small>TR</small></span>
+        <span className="mebar-stat" title="Victory points if the game ended now"><b><Num value={sc.total} /></b><small>VP</small></span>
+        <span className="mebar-stat" title="Cards in hand"><b>{p.hand.length}</b><small>hand</small></span>
+      </div>
+      <ResourceGrid s={s} pid={pid} />
+    </div>
+  );
+}
+
 export function Players({ s, viewer, onView, queued = [] }: { s: GameState; viewer: number | null; onView: (pid: number) => void; queued?: number[] }) {
   const decider = s.prompt ? s.prompt.pid : s.active;
   return (

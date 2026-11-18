@@ -20,10 +20,11 @@ async function page(width, height) {
 const d = await page(1440, 960);
 await d.screenshot({ path: `${out}/01-menu.png` });
 await d.getByRole('button', { name: 'Start game' }).click();
-await d.waitForSelector('.dialog');
+await d.waitForSelector('.start-view');
 await d.screenshot({ path: `${out}/02-setup.png` });
-// keep three starting cards and start
-const cards = d.locator('.dialog .pick-grid:not(.corps) .card');
+// a corporation, three starting cards, and start
+await d.locator('.start-group[aria-label="Corporations"] .card').first().click();
+const cards = d.locator('.start-group[aria-label="Starting cards"] .card');
 for (let i = 0; i < 3; i++) await cards.nth(i).click();
 await d.getByRole('button', { name: /^Start with/ }).click();
 await d.waitForTimeout(4000);
@@ -37,7 +38,7 @@ for (let i = 0; i < Number(process.argv[4] ?? 700); i++) {
   await d.waitForTimeout(15);
   const over = await d.locator('.scores').count();
   if (over) break;
-  const targets = d.locator('.dialog button:not([disabled]), .dialog .card, .hex.pickable, .offworld-space.pickable, .actionbar button:not([disabled]), .final-bar button:not([disabled])');
+  const targets = d.locator(':is(.dialog, .sheet) button:not([disabled]), :is(.dialog, .sheet) .card, .hex.pickable, .offworld-space.pickable, .actionbar button:not([disabled]), .final-bar button:not([disabled]), .turn-bar button');
   const n = await targets.count();
   if (!n) { await d.waitForTimeout(150); continue; }
   const pick = targets.nth(Math.floor(Math.random() * n));

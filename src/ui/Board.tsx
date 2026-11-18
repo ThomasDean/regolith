@@ -126,6 +126,18 @@ function Bonus({ kinds, cx, cy }: { kinds: string[]; cx: number; cy: number }) {
   );
 }
 
+/** Marks a volcanic area (where Lava Flows and some cities must go). */
+function Volcano({ cx, cy }: { cx: number; cy: number }) {
+  return (
+    <g className="volcano" transform={`translate(${cx} ${cy})`}>
+      <title>Volcanic area</title>
+      <path d="M-9,4 L-3.2,-4 h6.4 L9,4Z" fill="#6b3a1e" stroke="#2e1608" strokeWidth="0.9" strokeLinejoin="round" />
+      <path d="M-3.2,-4 h6.4 l-1.1,1.6 q-1,2.6 -1.8,0.4 q-0.9,2.8 -1.6,-0.2Z" fill="#ff7a2e" />
+      <path d="M-1.2,-5.2 q-2.4,-2.4 0,-4.6 M1.4,-5.2 q2.4,-2 0.6,-4.4" fill="none" stroke="#f3ecdd" strokeWidth="1" strokeLinecap="round" opacity="0.75" />
+    </g>
+  );
+}
+
 // glyph for special tiles, chosen from the card's subject
 function specialGlyph(card: string | undefined, cx: number, cy: number) {
   const n = card ?? '';
@@ -317,7 +329,7 @@ export const Board = memo(function Board({ s, options, onPick, fresh, pulse }: P
                 <>
                   <Bonus kinds={sp.bonus} cx={cx} cy={cy} />
                   {sp.name && <text x={cx} y={cy - 9} textAnchor="middle" className={`hex-name ${sp.type === 'ocean' ? 'on-basin' : ''}`}>{sp.name.replace(' Mons', '').replace('Tharsis ', '')}</text>}
-                  {sp.volcanic && <path d={`M${cx - 9},${cy - 13} l5,-7 h8 l5,7`} fill="none" stroke="#7a4a24" strokeWidth="1.2" opacity="0.7" />}
+                  {sp.volcanic && <Volcano cx={cx} cy={sp.name ? cy - 19 : cy - 12} />}
                 </>
               )}
               {claimed && !sp.tile && <circle cx={cx} cy={cy - 13} r={5} fill={claimed.color} stroke="#1d2840" strokeWidth={1.5}><title>Claimed by {claimed.name}</title></circle>}

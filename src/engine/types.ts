@@ -189,7 +189,43 @@ export interface PlayerSeat { name: string; color: string; cpu: Level | null }
 
 export type Phase = 'setup' | 'prelude' | 'research' | 'action' | 'finalGreenery' | 'over';
 
-export interface LogEntry { gen: number; pid: number | null; text: string }
+/** What one step changed, for the detailed log and the catch-up replay. Only public information. */
+export interface LogFx {
+  /** per player: resource, production, TR and card-resource changes, and cards put into play */
+  p?: {
+    pid: number;
+    res?: Partial<Record<Res, number>>;
+    prod?: Partial<Record<Res, number>>;
+    tr?: number;
+    /** resources added to or removed from cards, by card id */
+    cards?: Record<string, number>;
+    played?: string[];
+    corp?: string;
+    passed?: boolean;
+  }[];
+  /** tiles placed */
+  tiles?: { space: string; kind: string; owner: number | null }[];
+  temp?: number;
+  oxy?: number;
+  ocean?: number;
+  venus?: number;
+  milestones?: { id: string; pid: number }[];
+  awards?: { id: string; pid: number }[];
+  /** the phase and generation before this step, when either changed */
+  phase?: Phase;
+  gen?: number;
+}
+
+export interface LogEntry {
+  gen: number;
+  pid: number | null;
+  text: string;
+  /** running number, so a screen can tell which entries it has already shown (absent in older saves) */
+  n?: number;
+  fx?: LogFx;
+  /** marks the production step, which carries that step's changes */
+  kind?: 'production';
+}
 
 /** One sample of the scoreboard, taken at the end of every turn (for the end-of-game charts). */
 export interface HistoryPoint {

@@ -12,6 +12,9 @@ export const TAG_COLOR: Record<Tag, string> = {
 export const PLAYER_COLORS = ['#e4574a', '#4a9fe4', '#5fc07a', '#e8c547', '#b077e0'];
 export const PLAYER_COLOR_NAMES = ['Red', 'Blue', 'Green', 'Yellow', 'Purple'];
 
+/** A card resource with its count: 1 microbe, 3 microbes, 2 science. */
+export const resLabel = (r: string, n: number) => (n === 1 || r === 'science' ? r : `${r}s`);
+
 export const fmtTemp = (t: number) => `${t > 0 ? '+' : ''}${t}°C`;
 export const signed = (n: number) => (n > 0 ? `+${n}` : `${n}`);
 

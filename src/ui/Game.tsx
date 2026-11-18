@@ -7,8 +7,8 @@ import { CARDS } from '../engine/cards';
 import { inPlay } from '../engine/helpers';
 import { cpuAction } from '../engine/ai/cpu';
 import {
-  activeCards, autoPay, availableSpaces, awardCost, gameAwards, awardPlaces, canClaimMilestone, canFundAward, canPlayCard, canSP,
-  cardActionAvailable, cardCost, checkPayment, greeneryCost, maxSpend, MILESTONE_COST, gameMilestones, opsFeasible, payLimitsForCard,
+  activeCards, autoPay, availableSpaces, canPlayCard, canSP,
+  cardActionAvailable, cardCost, checkPayment, greeneryCost, maxSpend, opsFeasible, payLimitsForCard,
   requirementsMet, score, spCost, SP_NAME, steelValue, titaniumValue, type PayLimits, buyCost, spList, redsTax, payStock,
 } from '../engine/queries';
 import { ColoniesPanel, TurmoilPanel } from './Expansions';
@@ -20,8 +20,14 @@ import { ResIcon } from './Icons';
 import { Dialog } from './Dialog';
 import { HowToPlay } from './HowToPlay';
 import { Gauges } from './Gauges';
-import { Players, ResourceGrid } from './Players';
-import { fmtTemp, RES_LABEL } from './format';
+import { MeBar, Players } from './Players';
+import { Sheet } from './Sheet';
+import { loadTableauView, Tableau, type TableauView } from './Tableau';
+import { MAPanel } from './MA';
+import { StartPicker } from './StartPicker';
+import { LogPanel } from './LogPanel';
+import { buildReplay, loadSeen, replayStart, saveSeen, type Replay } from './replay';
+import { fmtTemp, RES_LABEL, resLabel } from './format';
 import { cloudEnabled, currentCloudId, putSave, useSession } from '../cloud';
 import { BannerView, CardShowcase, Confetti, diffEvents, FxContext, loadFxSetting, saveFxSetting, Toasts, type Banner, type Showcase, type Toast } from './Fx';
 import type { SeatRow } from '../online/protocol';
@@ -52,12 +58,20 @@ export interface OnlineLink {
 }
 
 interface Entry { s: GameState; actor: number | null }
+interface Draft { base: GameState; version?: number; steps: { a: Action; s: GameState }[]; committing?: boolean }
 
 const deciderOf = (s: GameState) => (s.prompt ? s.prompt.pid : s.active);
 
 export function Game({ initial, onExit, online, saveId }: { initial: GameState; onExit: () => void; online?: OnlineLink; saveId?: string }) {
   const [hist, setHist] = useState<Entry[]>([{ s: online?.view ?? initial, actor: null }]);
-  const s = hist[hist.length - 1].s;
+  /** the game as the server (or this device's save) has it */
+  const live = hist[hist.length - 1].s;
+  // your turn is played as a draft first: every step can be undone until you confirm the turn,
+  // except steps that reveal cards (draws), which are confirmed on their own and lock it in
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [risky, setRisky] = useState<Action | null>(null);
+  /** what the table shows and the controls act on: your draft, or the game */
+  const s = draft?.steps[draft.steps.length - 1]?.s ?? live;
   const humans = s.players.filter((p) => !p.cpu).map((p) => p.id);
   const [localViewer, setViewer] = useState<number | null>(humans.length === 1 ? humans[0] : null);
   const viewer = online ? (online.seat >= 0 ? online.seat : null) : localViewer;
@@ -66,10 +80,14 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
   const [viewCards, setViewCards] = useState<number | null>(null);
   const [openCard, setOpenCard] = useState<string | null>(null);
   const [panel, setPanel] = useState<null | 'projects' | 'sell' | 'confirmPass'>(null);
+  const [tabView, setTabView] = useState<TableauView>(loadTableauView);
+  // catch-up replay: while it runs, the table shows rebuilt earlier frames and nobody can act
+  const [replay, setReplay] = useState<{ r: Replay; i: number; playing: boolean } | null>(null);
+  const view = replay ? replay.r.frames[replay.i] : s;
   const decider = deciderOf(s);
   const dp = s.players[decider];
   const over = s.phase === 'over';
-  const myTurn = !over && !dp.cpu && viewer === decider;
+  const myTurn = !over && !dp.cpu && viewer === decider && !replay;
 
   const lastOp = useRef<'act' | 'undo' | null>(null);
   const [sending, setSending] = useState(false);
@@ -94,7 +112,67 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
     setError(null);
     sendRef.current!(a).catch((e) => setError((e as Error).message)).finally(() => setSending(false));
   }, []);
-  const act = online ? onlineAct : localAct;
+  const rawAct = online ? onlineAct : localAct;
+
+  // ---- drafting your turn ----
+  const draftable = (cur: GameState) => viewer !== null && !replay && (cur.phase === 'action' || cur.phase === 'finalGreenery')
+    && deciderOf(cur) === viewer && cur.active === viewer && !cur.players[viewer].cpu;
+  const pushDraft = (a: Action, next: GameState) => {
+    lastOp.current = 'act';
+    setError(null);
+    setDraft((d) => ({ base: d?.base ?? live, version: d ? d.version : online?.version, steps: [...(d?.steps ?? []), { a, s: next }] }));
+  };
+  /** Sends the draft (plus one more action) to the game for good. */
+  const commit = async (extra?: Action) => {
+    const steps = draft?.steps ?? [];
+    const actions = [...steps.map((x) => x.a), ...(extra ? [extra] : [])];
+    if (!actions.length) { setDraft(null); return; }
+    if (!online) {
+      const top = steps[steps.length - 1]?.s ?? live;
+      let fin: GameState | null = null;
+      if (extra) {
+        try { fin = applyAction(top, extra); } catch (e) { setError((e as Error).message); return; }
+      }
+      const actor = deciderOf(draft?.base ?? live);
+      if (fin) lastOp.current = 'act';
+      setHist((h) => [...h, ...steps.map((x) => ({ s: x.s, actor })), ...(fin ? [{ s: fin, actor }] : [])].slice(-80));
+      setDraft(null);
+      return;
+    }
+    setDraft((d) => (d ? { ...d, committing: true } : { base: live, steps: [], committing: true }));
+    setSending(true);
+    setError(null);
+    try {
+      for (const a of actions) await sendRef.current!(a);
+    } catch (e) {
+      setError(`${(e as Error).message} Your turn was reloaded from the server.`);
+    } finally {
+      setSending(false);
+      setDraft(null);
+    }
+  };
+  const act = (a: Action) => {
+    if (!draftable(s)) { rawAct(a); return; }
+    let next: GameState | null = null;
+    try { next = applyAction(s, a); } catch (e) {
+      // online the deck is hidden from you, so a step that draws can't be tried here
+      if (!online) { setError((e as Error).message); return; }
+    }
+    if (!next || next.reveal !== s.reveal) { setRisky(a); return; }
+    pushDraft(a, next);
+  };
+  const undoStep = () => {
+    lastOp.current = 'undo';
+    setDraft((d) => (d && d.steps.length > 1 ? { ...d, steps: d.steps.slice(0, -1) } : null));
+  };
+  // the game moved on without you (a seat change, a forfeit): drop a draft built on the old one
+  const liveVersion = online?.version;
+  useEffect(() => {
+    if (!draft || draft.committing) return;
+    if (online ? draft.version !== liveVersion : draft.base !== live) setDraft(null);
+  }, [live, liveVersion, draft, online]);
+  const drafting = !!draft && draft.steps.length > 0 && !draft.committing;
+  const turnReady = drafting && (deciderOf(s) !== viewer || s.phase !== draft!.base.phase || s.generation !== draft!.base.generation);
 
   // online: each newer server view becomes the next step, so effects play as they do locally
   const onlineView = online?.view;
@@ -108,7 +186,7 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
     });
   }, [onlineView]);
 
-  useEffect(() => { if (!online && saveId) regolithSaves.save(saveId, s); }, [s, online, saveId]);
+  useEffect(() => { if (!online && saveId) regolithSaves.save(saveId, live); }, [live, online, saveId]);
 
   // cloud sync: a couple of seconds after the last change (right away when the game ends)
   const session = useSession();
@@ -118,10 +196,10 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
     if (!cloudEnabled || !session || online) return;
     const t = setTimeout(() => {
       setCloud('saving');
-      putSave(cloudId, s).then(() => setCloud('saved'), () => setCloud('error'));
-    }, s.phase === 'over' ? 0 : 2500);
+      putSave(cloudId, live).then(() => setCloud('saved'), () => setCloud('error'));
+    }, live.phase === 'over' ? 0 : 2500);
     return () => clearTimeout(t);
-  }, [s, session, cloudId, online]);
+  }, [live, session, cloudId, online]);
 
   // ---- effects: turn each state change into showcases, tile drops, toasts and banners ----
   const [fxOn, setFxOn] = useState(loadFxSetting);
@@ -130,7 +208,7 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
   const [banner, setBanner] = useState<Banner | null>(null);
   const [fresh, setFresh] = useState<string[]>([]);
   const [pulse, setPulse] = useState<{ kind: 'temp' | 'oxy' | 'ocean'; key: number } | null>(null);
-  const prevS = useRef(s);
+  const prevS = useRef(view);
   const fxKey = useRef(0);
   const holdRef = useRef(0);
   const pushToast = useCallback((t: Omit<Toast, 'id'>) => {
@@ -140,6 +218,7 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
   }, []);
   useEffect(() => {
     const a = prevS.current;
+    const s = view;
     prevS.current = s;
     const op = lastOp.current;
     lastOp.current = null;
@@ -187,7 +266,7 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
       setBanner({ key: ++fxKey.current, tone: 'turn', title: 'Your turn' });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s]);
+  }, [view]);
   const toggleFx = () => setFxOn((v) => { saveFxSetting(!v); if (v) setShow(null); return !v; });
   const endShow = useCallback(() => setShow(null), []);
   const endBanner = useCallback(() => setBanner(null), []);
@@ -199,37 +278,38 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
   advanceRef.current = online?.advance;
   const onlineVersion = online?.version;
   const onlineHost = online?.host;
+  const replaying = !!replay;
+  const liveDp = live.players[deciderOf(live)];
+  const holding = replaying || !!draft;
   useEffect(() => {
-    if (over || !dp.cpu) return;
+    const s = live, dp = liveDp, over = live.phase === 'over';
+    if (over || !dp.cpu || holding) return;
     const base = s.prompt ? Math.min(250, cpuSpeed) : cpuSpeed;
     if (onlineVersion !== undefined) {
       const v = onlineVersion;
       const t = setTimeout(() => advanceRef.current!(v), base + holdRef.current + (onlineHost ? 0 : 6000));
       return () => clearTimeout(t);
     }
-    const t = setTimeout(() => act(cpuAction(s, dp.cpu!)), base + holdRef.current);
+    const t = setTimeout(() => rawAct(cpuAction(s, dp.cpu!)), base + holdRef.current);
     return () => clearTimeout(t);
-  }, [s, over, dp.cpu, act, cpuSpeed, onlineVersion, onlineHost]);
+  }, [live, liveDp, rawAct, cpuSpeed, onlineVersion, onlineHost, holding]);
 
   // with several humans, hide hands between them
-  const needsHandoff = !online && !over && !dp.cpu && viewer !== decider;
+  const needsHandoff = !online && !over && !dp.cpu && viewer !== decider && !replay && !draft;
   useEffect(() => {
     if (needsHandoff && humans.length === 1) setViewer(decider);
   }, [needsHandoff, humans.length, decider]);
 
-  const last = hist[hist.length - 1];
-  const prev = hist[hist.length - 2];
-  const canUndo = !online && !!prev && last.actor !== null && last.actor === viewer && !s.players[last.actor].cpu && prev.s.reveal === s.reveal && !over;
-  const undo = () => { lastOp.current = 'undo'; setHist((h) => h.slice(0, -1)); };
 
   // online, corporation and research picks are made at the same time, not in turn order
   const meP = viewer !== null ? s.players[viewer] : null;
-  const picking = online
+  const picking = !replay && (online
     ? !!meP && !s.prompt && !online.queued.includes(meP.id) && ((s.phase === 'setup' && !!meP.setup) || (s.phase === 'research' && !!meP.research))
-    : myTurn;
+    : myTurn);
   const canAct = myTurn && !sending;
   const pr = canAct ? s.prompt : null;
   const [seatsOpen, setSeatsOpen] = useState(false);
+  const choosingStart = picking && !sending && s.phase === 'setup';
   const spacePrompt = pr?.kind === 'space' ? pr : null;
   const me = viewer !== null ? s.players[viewer] : null;
 
@@ -249,13 +329,69 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
   const turnDone = !!online && !over && online.seat >= 0 && !!me && !me.forfeited && !online.waiting.includes(online.seat) && !sending;
   const gameKey = online ? `regolith:room:${online.room}` : saveId ? `regolith:local:${saveId}` : null;
 
+  // what this device last showed: moves made while you were away can be replayed to catch up
+  const latestN = s.log[s.log.length - 1]?.n ?? -1;
+  const latestRef = useRef(latestN);
+  latestRef.current = latestN;
+  /** log entries (by running number) made while this game wasn't on screen */
+  const [missed, setMissed] = useState<{ after: number; upTo: number } | null>(() => {
+    const seen = gameKey ? loadSeen(gameKey) : null;
+    return seen !== null && seen < latestN ? { after: seen, upTo: latestN } : null;
+  });
+  useEffect(() => { if (gameKey && document.visibilityState !== 'hidden') saveSeen(gameKey, latestN); }, [gameKey, latestN]);
+  useEffect(() => {
+    let hiddenAt: number | null = null;
+    const onVis = () => {
+      if (document.visibilityState === 'hidden') hiddenAt = latestRef.current;
+      else if (hiddenAt !== null) {
+        const after = hiddenAt;
+        hiddenAt = null;
+        if (latestRef.current > after) setMissed((m) => ({ after: m ? Math.min(m.after, after) : after, upTo: latestRef.current }));
+        if (gameKey) saveSeen(gameKey, latestRef.current);
+      }
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [gameKey]);
+  const missedFrom = missed ? s.log.findIndex((l) => (l.n ?? -1) > missed.after) : -1;
+  const catchUp = missedFrom < 0 ? 0 : s.log.slice(missedFrom).filter((l) => (l.n ?? -1) <= missed!.upTo && l.pid !== null && l.pid !== viewer).length;
+  const startReplay = () => {
+    const from = catchUp > 0 ? Math.max(missedFrom, s.log.length - 40) : replayStart(s, viewer);
+    if (from >= s.log.length) return;
+    setMissed(null);
+    setShow(null); setBanner(null);
+    setReplay({ r: buildReplay(s, from), i: 0, playing: true });
+  };
+  const stopReplay = useCallback(() => setReplay(null), []);
+  useEffect(() => {
+    if (!replay || !replay.playing) return;
+    const last = replay.r.frames.length - 1;
+    const next = s.log[replay.r.from + replay.i];
+    const pace = cpuSpeed >= 900 ? 1.3 : cpuSpeed <= 120 ? 0.6 : 1;
+    const busy = next?.fx?.p?.some((e) => e.played?.length || e.corp) ? 1900 : next?.fx?.tiles ? 1300 : 900;
+    const delay = replay.i >= last ? 900 : (replay.i === 0 ? 600 : 0) + (fxOn ? busy : 700) * pace;
+    const t = setTimeout(() => {
+      if (replay.i >= last) { setReplay(null); return; }
+      lastOp.current = 'act';
+      setReplay({ ...replay, i: replay.i + 1 });
+    }, delay);
+    return () => clearTimeout(t);
+  }, [replay, s.log, cpuSpeed, fxOn]);
+  const stepReplay = () => {
+    if (!replay) return;
+    if (replay.i >= replay.r.frames.length - 1) { setReplay(null); return; }
+    lastOp.current = 'act';
+    setReplay({ ...replay, i: replay.i + 1, playing: false });
+  };
+  const replayEntry = replay && replay.i > 0 ? s.log[replay.r.from + replay.i - 1] : null;
+
   return (
     <FxContext.Provider value={fxOn}>
     <div className="game" data-fx={fxOn ? 'on' : 'off'}>
       <header className="topbar">
         <div className="brand">Regolith</div>
         <div className="gen">Generation <b>{s.generation}</b></div>
-        <Status s={s} viewer={viewer} online={online} />
+        <Status s={s} viewer={viewer} online={online} awaiting={turnReady} />
         <div className="topbar-tools">
           {session && cloud !== 'idle' && (
             <span className={`cloud-status ${cloud}`} role="status">
@@ -272,14 +408,15 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
               <option value={120}>Fast</option>
             </select>
           </label>
-          {online ? (
+          {online && (
             <>
               <span className="room-code" title="Friends join with this code">Game <b>{online.code}</b></span>
               {online.host && !over && <button type="button" className="btn ghost" onClick={() => setSeatsOpen(true)}>Seats</button>}
             </>
-          ) : (
-            <button type="button" className="btn ghost" onClick={undo} disabled={!canUndo} title="Undo your last step (not after cards are drawn)">Undo</button>
           )}
+          <button type="button" className="btn ghost" onClick={undoStep} disabled={!drafting} title="Undo your last step this turn (not after cards are drawn)">Undo</button>
+          <button type="button" className="btn ghost" onClick={replay ? stopReplay : startReplay} disabled={!replay && (!s.log.length || !!draft)}
+            title="Watch the latest moves again on the board">{replay ? 'Stop replay' : 'Replay'}</button>
           {hasExpansions && <button type="button" className="btn ghost" onClick={() => setHelp(true)} title="How to play this game's expansions">How to play</button>}
           {forfeitable.length > 0 && <button type="button" className="btn ghost" onClick={() => setForfeiting(true)}>Forfeit</button>}
           <NextGameButton current={gameKey} turnDone={turnDone} />
@@ -287,22 +424,25 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
         </div>
       </header>
 
+      {me && <MeBar s={view} pid={me.id} />}
+
       {error && <div className="error" role="alert">{error}<button type="button" className="icon-btn" onClick={() => setError(null)} aria-label="Dismiss">×</button></div>}
 
+      {choosingStart ? <StartPicker s={s} pid={online ? viewer! : decider} act={act} onHelp={hasExpansions ? () => setHelp(true) : undefined} /> : (
       <main className="table">
         <div className="map-col">
-          <Gauges s={s} />
+          <Gauges s={view} />
           <div className="map-area">
             {spacePrompt && <div className="place-banner" role="status">{spacePrompt.title}: choose a highlighted space.</div>}
-            <Board s={s} options={spacePrompt?.options} onPick={(id) => act({ t: 'answer', space: id })} fresh={fresh} pulse={fxOn ? pulse : null} />
+            <Board s={view} options={spacePrompt?.options} onPick={(id) => act({ t: 'answer', space: id })} fresh={fresh} pulse={fxOn ? pulse : null} />
           </div>
         </div>
 
         <aside className="side">
-          <Players s={s} viewer={viewer} onView={setViewCards} queued={online?.queued} />
-          <ColoniesPanel s={s} viewer={viewer} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} act={act} />
-          <TurmoilPanel s={s} viewer={viewer} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} act={act} />
-          <Log s={s} />
+          <Players s={view} viewer={viewer} onView={setViewCards} queued={online?.queued} />
+          <MAPanel s={view} viewer={viewer} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} act={act} />
+          <ColoniesPanel s={view} viewer={viewer} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} act={act} />
+          <TurmoilPanel s={view} viewer={viewer} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} act={act} />
         </aside>
 
         <section className="desk">
@@ -321,12 +461,14 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
           {me && (
             <Hand s={s} pid={me.id} onOpen={setOpenCard} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} />
           )}
+          {me && <Tableau s={view} pid={me.id} view={tabView} setView={setTabView} title="Your cards in play" />}
           {!me && !over && <p className="muted pad">{online ? 'You are watching this game.' : 'Hands stay hidden until a player takes the device.'}</p>}
-          {online && me && !over && !picking && !myTurn && (s.phase === 'setup' || s.phase === 'research') && (
+          {online && me && !over && !picking && !myTurn && !replay && (s.phase === 'setup' || s.phase === 'research') && (
             <p className="muted pad waiting-note" role="status">Your {s.phase === 'setup' ? 'corporation' : 'research'} is in. It applies when your turn comes round.</p>
           )}
         </section>
       </main>
+      )}
 
       {needsHandoff && humans.length > 1 && (
         <Dialog title={`Pass the device to ${dp.name}`}>
@@ -334,13 +476,12 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
           <button type="button" className="btn big" onClick={() => setViewer(decider)}>I'm {dp.name}, show my hand</button>
         </Dialog>
       )}
-      {picking && !sending && s.phase === 'setup' && <SetupDialog s={s} pid={online ? viewer! : decider} act={act} onHelp={hasExpansions ? () => setHelp(true) : undefined} />}
       {picking && !sending && s.phase === 'research' && !s.prompt && <ResearchDialog s={s} pid={online ? viewer! : decider} act={act} onHelp={hasExpansions ? () => setHelp(true) : undefined} />}
       {canAct && s.phase === 'prelude' && !s.prompt && !s.pendingAction && <PreludeDialog s={s} pid={decider} act={act} />}
       {seatsOpen && online && <SeatsDialog s={s} online={online} onClose={() => setSeatsOpen(false)} />}
       {pr && pr.kind !== 'space' && <PromptDialog s={s} pr={pr} act={act} />}
       {openCard && me && <CardDialog s={s} pid={me.id} id={openCard} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} onClose={() => setOpenCard(null)} act={(a) => { setOpenCard(null); act(a); }} />}
-      {viewCards !== null && <TableauDialog s={s} pid={viewCards} onClose={() => setViewCards(null)} />}
+      {viewCards !== null && <TableauDialog s={view} pid={viewCards} viewer={viewer} onClose={() => setViewCards(null)} />}
       {panel === 'sell' && me && <SellDialog s={s} pid={me.id} onClose={() => setPanel(null)} act={(a) => { setPanel(null); act(a); }} />}
       {forfeiting && (
         <ForfeitDialog seats={forfeitable} initial={viewer ?? decider} onClose={() => setForfeiting(false)} onConfirm={doForfeit}
@@ -349,16 +490,55 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
       {help && <HowToPlay onClose={() => setHelp(false)} inGame={s.options.expansions} />}
       {over && <GameOver s={s} onExit={onExit} />}
       {over && fxOn && <Confetti colors={s.players.map((p) => p.color)} />}
-      {show && <CardShowcase key={show.key} show={show} s={s} onDone={endShow} fast={cpuSpeed <= 120} />}
+      {show && <CardShowcase key={show.key} show={show} s={view} onDone={endShow} fast={cpuSpeed <= 120} />}
       {banner && <BannerView key={banner.key} b={banner} onDone={endBanner} />}
-      <Toasts items={toasts} s={s} />
+      <Toasts items={toasts} s={view} />
+      {drafting && (
+        <div className={`turn-bar ${turnReady ? 'ready' : ''}`} role="status" aria-live="polite">
+          <span className="turn-text">
+            {turnReady
+              ? <><b>End your turn?</b> Nothing is sent until you confirm.</>
+              : <>{draft!.steps.length} step{draft!.steps.length === 1 ? '' : 's'} this turn, not confirmed yet.</>}
+          </span>
+          <span className="turn-tools">
+            <button type="button" className="btn ghost" onClick={undoStep}>Undo</button>
+            <button type="button" className={`btn ${turnReady ? '' : 'ghost'}`} onClick={() => commit()}>{turnReady ? 'Confirm turn' : 'Confirm so far'}</button>
+          </span>
+        </div>
+      )}
+      {risky && (
+        <Dialog title="This can’t be undone" onClose={() => setRisky(null)}
+          footer={<>
+            <button type="button" className="btn ghost" onClick={() => setRisky(null)}>Cancel</button>
+            <button type="button" className="btn" onClick={() => { const a = risky; setRisky(null); commit(a); }}>Go ahead</button>
+          </>}>
+          <p>This step reveals new cards, so it can’t be taken back.{drafting ? ' The rest of your turn so far is confirmed with it.' : ''}</p>
+        </Dialog>
+      )}
+      {replay && (
+        <div className="replay-bar" role="status" aria-live="polite">
+          <span className="replay-count">Replay {replay.i}/{replay.r.frames.length - 1}</span>
+          <span className="replay-text" style={replayEntry?.pid != null ? { ['--pc' as string]: s.players[replayEntry.pid].color } : undefined}>
+            {replayEntry ? (replayEntry.text || `${s.players[replayEntry.pid ?? 0]?.name ?? ''}: effect resolved`) : 'Starting…'}
+          </span>
+          <span className="replay-tools">
+            <button type="button" className="btn small ghost" onClick={() => setReplay({ ...replay, playing: !replay.playing })}>{replay.playing ? 'Pause' : 'Play'}</button>
+            <button type="button" className="btn small ghost" onClick={stepReplay}>Next</button>
+            <button type="button" className="btn small" onClick={stopReplay}>Done</button>
+          </span>
+        </div>
+      )}
+      <LogPanel s={view} viewer={viewer} onReplay={replay ? undefined : startReplay} catchUp={replay ? 0 : catchUp} onDismissCatchUp={() => setMissed(null)} />
     </div>
     </FxContext.Provider>
   );
 }
 
 // ---------------- status line ----------------
-function Status({ s, viewer, online }: { s: GameState; viewer: number | null; online?: OnlineLink }) {
+function Status({ s, viewer, online, awaiting }: { s: GameState; viewer: number | null; online?: OnlineLink; awaiting?: boolean }) {
+  if (awaiting && viewer !== null) {
+    return <div className="status" role="status" aria-live="polite" style={{ ['--pc' as string]: s.players[viewer].color }}><span className="swatch" />Confirm your turn</div>;
+  }
   const d = s.players[deciderOf(s)];
   let text: string;
   const names = (ids: number[]) => ids.map((i) => (i === viewer ? 'you' : s.players[i].name)).join(', ');
@@ -368,9 +548,10 @@ function Status({ s, viewer, online }: { s: GameState; viewer: number | null; on
     text = ids.length === 1 && ids[0] === viewer ? `Your move: ${what}` : `Waiting on ${names(ids)}: ${what}`;
     return <div className="status" role="status" aria-live="polite" style={{ ['--pc' as string]: s.players[ids[0]].color }}><span className="swatch" />{text}</div>;
   }
+  const isYou = d.id === viewer && !d.cpu;
   if (s.phase === 'over') text = 'Game over';
-  else if (s.phase === 'setup') text = `${d.name} is choosing a corporation`;
-  else if (s.phase === 'research') text = `${d.name} is buying research cards`;
+  else if (s.phase === 'setup') text = isYou ? 'Choose your corporation' : `${d.name} is choosing a corporation`;
+  else if (s.phase === 'research') text = isYou ? 'Buy your research cards' : `${d.name} is buying research cards`;
   else if (s.phase === 'prelude') text = `${d.name} is playing preludes`;
   else if (s.phase === 'finalGreenery') text = `${d.name} is placing final greeneries`;
   else text = `${d.name}'s turn`;
@@ -378,21 +559,6 @@ function Status({ s, viewer, online }: { s: GameState; viewer: number | null; on
   else if (viewer === d.id && s.phase === 'action') text = 'Your turn';
   else if (online && s.phase !== 'over' && !d.cpu) text = `Waiting on ${d.name}`;
   return <div className="status" role="status" aria-live="polite" style={{ ['--pc' as string]: d.color }}><span className="swatch" />{text}</div>;
-}
-
-// ---------------- log ----------------
-function Log({ s }: { s: GameState }) {
-  const items = s.log.slice(-40).reverse();
-  return (
-    <section className="log" aria-label="Game log">
-      <h3>Log</h3>
-      <ol>
-        {items.map((l, i) => (
-          <li key={s.log.length - i} style={l.pid !== null ? { ['--pc' as string]: s.players[l.pid].color } : undefined} className={l.pid === null ? 'sys' : ''}>{l.text}</li>
-        ))}
-      </ol>
-    </section>
-  );
 }
 
 // ---------------- hand ----------------
@@ -413,7 +579,6 @@ function Hand({ s, pid, onOpen, canAct }: { s: GameState; pid: number; onOpen: (
     <section className="hand" aria-label="Your hand">
       <div className="hand-head">
         <h3>Your hand <span className="muted">({p.hand.length})</span></h3>
-        <ResourceGrid s={s} pid={pid} />
         <label className="sort">Sort
           <select value={sort} onChange={(e) => setSort(e.target.value as 'playable' | 'cost')}>
             <option value="playable">Playable first</option>
@@ -534,52 +699,16 @@ function ActionBar({ s, pid, myTurn, act, panel, setPanel }: { s: GameState; pid
               return (
                 <button key={c.id} type="button" className="btn small" disabled={!myTurn || !avail} title={c.action!.text}
                   onClick={() => act({ t: 'cardAction', card: c.id, pay: c.action!.mc ? autoPay(s, pid, c.action!.mc, lim) ?? undefined : undefined })}>
-                  {c.name}{used ? ' (used)' : ''}<span className="chip-sub">{actionLine(c.id) ? <FxLine l={actionLine(c.id)!} /> : c.action!.text}</span>
+                  {c.name}{used ? ' (used)' : ''}{c.resource && <span className="chip-res" title={`${p.cardRes[c.id] ?? 0} ${resLabel(c.resource, p.cardRes[c.id] ?? 0)} on this card`}>{p.cardRes[c.id] ?? 0} {resLabel(c.resource, p.cardRes[c.id] ?? 0)}</span>}<span className="chip-sub">{actionLine(c.id) ? <FxLine l={actionLine(c.id)!} /> : c.action!.text}</span>
                 </button>
               );
             })}
           </div>
         </div>
       )}
-      <div className="ab-group">
-        <h3>Milestones <span className="muted">{MILESTONE_COST} M€, {3 - s.milestones.length} left</span></h3>
-        <div className="chips">
-          {gameMilestones(s).map((m) => {
-            const owner = s.milestones.find((x) => x.id === m.id);
-            return (
-              <button key={m.id} type="button" className="btn small" disabled={!myTurn || !canClaimMilestone(s, pid, m.id)} onClick={() => act({ t: 'milestone', id: m.id, pay: payHelion(MILESTONE_COST) })}
-                style={owner ? { ['--pc' as string]: s.players[owner.pid].color } : undefined} data-owned={owner ? 'yes' : undefined}>
-                {m.name}<span className="chip-sub">{owner ? `Claimed by ${s.players[owner.pid].name}` : `${m.text} (you: ${m.metric(s, pid)})`}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-      <div className="ab-group">
-        <h3>Awards <span className="muted">{s.awards.length < 3 ? `${awardCost(s)} M€, ${3 - s.awards.length} left` : 'all funded'}</span></h3>
-        <div className="chips">
-          {gameAwards(s).map((a) => {
-            const funded = s.awards.find((x) => x.id === a.id);
-            const lead = awardPlaces(s, a.id).first.map((i) => s.players[i].name).join(', ');
-            return (
-              <button key={a.id} type="button" className="btn small" disabled={!myTurn || !canFundAward(s, pid, a.id)} onClick={() => act({ t: 'award', id: a.id, pay: payHelion(awardCost(s)) })}
-                style={funded ? { ['--pc' as string]: s.players[funded.pid].color } : undefined} data-owned={funded ? 'yes' : undefined}>
-                {a.name}<span className="chip-sub">{a.text}. {funded ? 'Funded. ' : ''}Leading: {lead}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
       <div className="ab-turn">
         {s.actionsThisTurn >= 1 && <button type="button" className="btn ghost" disabled={!myTurn} onClick={() => act({ t: 'endTurn' })}>End turn</button>}
-        {panel === 'confirmPass' ? (
-          <span className="confirm">Pass for the rest of this generation?
-            <button type="button" className="btn danger" onClick={() => { setPanel(null); act({ t: 'pass' }); }}>Pass</button>
-            <button type="button" className="btn ghost" onClick={() => setPanel(null)}>Keep playing</button>
-          </span>
-        ) : (
-          <button type="button" className="btn" disabled={!myTurn} onClick={() => setPanel('confirmPass')}>Pass</button>
-        )}
+        <button type="button" className="btn" disabled={!myTurn} onClick={() => act({ t: 'pass' })} title="Pass for the rest of this generation (you can undo it before confirming)">Pass</button>
       </div>
     </section>
   );
@@ -600,46 +729,6 @@ function SellDialog({ s, pid, onClose, act }: { s: GameState; pid: number; onClo
 }
 
 // ---------------- setup & research ----------------
-function SetupDialog({ s, pid, act, onHelp }: { s: GameState; pid: number; act: (a: Action) => void; onHelp?: () => void }) {
-  const p = s.players[pid];
-  const su = p.setup!;
-  const [corp, setCorp] = useState(su.corps[0]);
-  const [keep, setKeep] = useState<string[]>([]);
-  const [pre, setPre] = useState<string[]>([]);
-  const beginner = corp === 'beginner-corporation';
-  const start = CARDS[corp].startMC!;
-  const price = corp === 'polyphemos' ? 5 : corp === 'terralabs-research' ? 1 : 3;
-  const cost = beginner ? 0 : keep.length * price;
-  const toggle = (id: string) => setKeep((x) => (x.includes(id) ? x.filter((y) => y !== id) : [...x, id]));
-  const togglePre = (id: string) => setPre((x) => (x.includes(id) ? x.filter((y) => y !== id) : x.length >= 2 ? [x[1], id] : [...x, id]));
-  const needPre = !!su.preludes && pre.length !== 2;
-  return (
-    <Dialog title={`${p.name}: found your corporation`} wide
-      footer={<>
-        <span className={cost > start || needPre ? 'warn' : 'muted'}>{needPre ? `Choose 2 preludes (${pre.length} chosen). ` : ''}{beginner ? 'All 10 cards are free with the beginner corporation.' : `${keep.length} cards cost ${cost} M€, leaving ${start - cost} M€.`}</span>
-        <button type="button" className="btn" disabled={cost > start || needPre} onClick={() => act({ t: 'setup', corp, keep: beginner ? [] : keep, ...(su.preludes ? { preludes: pre } : {}) })}>Start with {CARDS[corp].name}</button>
-      </>}>
-      <h3>Corporation</h3>
-      <div className="pick-grid corps">
-        {su.corps.map((c, i) => <Card key={c} id={c} index={i} selected={corp === c} onClick={() => setCorp(c)} />)}
-      </div>
-      {su.preludes && (
-        <>
-          <h3>Preludes <span className="muted">keep 2; both are played before the first generation</span></h3>
-          <div className="pick-grid">
-            {su.preludes.map((c, i) => <Card key={c} id={c} index={i + 2} selected={pre.includes(c)} onClick={() => togglePre(c)} />)}
-          </div>
-        </>
-      )}
-      <h3>Starting cards {beginner ? '' : <span className="muted">{price} M€ each</span>}</h3>
-      <div className="pick-grid">
-        {su.cards.map((id, i) => <Card key={id} id={id} index={i + 2} selected={beginner || keep.includes(id)} onClick={beginner ? undefined : () => toggle(id)} />)}
-      </div>
-      {onHelp && <HelpLink onHelp={onHelp} />}
-    </Dialog>
-  );
-}
-
 function ResearchDialog({ s, pid, act, onHelp }: { s: GameState; pid: number; act: (a: Action) => void; onHelp?: () => void }) {
   const p = s.players[pid];
   const [keep, setKeep] = useState<string[]>([]);
@@ -647,12 +736,10 @@ function ResearchDialog({ s, pid, act, onHelp }: { s: GameState; pid: number; ac
   const price = buyCost(s, pid);
   const cost = keep.length * price;
   return (
-    <Dialog title={`${p.name}: research for generation ${s.generation}`} wide
-      footer={<>
-        <span className={cost > p.res.mc ? 'warn' : 'muted'}>{cost} M€ of your {p.res.mc} M€</span>
-        <button type="button" className="btn" disabled={cost > p.res.mc} onClick={() => act({ t: 'research', keep })}>{keep.length ? `Buy ${keep.length}` : 'Buy none'}</button>
-      </>}>
-      <p>Buy any of these cards for {price} M€ each. The rest are discarded.</p>
+    <Sheet title={`Research for generation ${s.generation}`}
+      summary={<span className={cost > p.res.mc ? 'warn' : 'muted'}>{keep.length} chosen · {cost} M€ of your {p.res.mc} M€</span>}
+      actions={<button type="button" className="btn" disabled={cost > p.res.mc} onClick={() => act({ t: 'research', keep })}>{keep.length ? `Buy ${keep.length}` : 'Buy none'}</button>}>
+      <p className="muted">{p.name}: buy any of these cards for {price} M€ each. The rest are discarded.</p>
       <div className="pick-grid">
         {(p.research ?? []).map((id, i) => <Card key={id} id={id} s={s} pid={pid} index={i} selected={keep.includes(id)} onClick={() => toggle(id)} />)}
       </div>
@@ -660,7 +747,7 @@ function ResearchDialog({ s, pid, act, onHelp }: { s: GameState; pid: number; ac
         <div className="pick-grid">{p.hand.map((id) => <Card key={id} id={id} s={s} pid={pid} compact />)}</div>
       </details>
       {onHelp && <HelpLink onHelp={onHelp} />}
-    </Dialog>
+    </Sheet>
   );
 }
 
@@ -671,8 +758,8 @@ const HelpLink = ({ onHelp }: { onHelp: () => void }) => (
 function PreludeDialog({ s, pid, act }: { s: GameState; pid: number; act: (a: Action) => void }) {
   const p = s.players[pid];
   return (
-    <Dialog title={`${p.name}: play your preludes`} wide>
-      <p>Play them in either order. One that can’t be played in full is swapped for 15 M€.</p>
+    <Sheet title={`${p.name}: play your preludes`} summary={<span className="muted">Tap one to play it.</span>}>
+      <p className="muted">Play them in either order. One that can’t be played in full is swapped for 15 M€.</p>
       <div className="pick-grid">
         {(p.preludes ?? []).map((id, i) => <Card key={id} id={id} s={s} pid={pid} index={i} onClick={() => act({ t: 'prelude', card: id })} />)}
       </div>
@@ -681,7 +768,7 @@ function PreludeDialog({ s, pid, act }: { s: GameState; pid: number; act: (a: Ac
           <div className="pick-grid">{p.hand.map((id) => <Card key={id} id={id} s={s} pid={pid} compact />)}</div>
         </details>
       )}
-    </Dialog>
+    </Sheet>
   );
 }
 
@@ -709,7 +796,8 @@ function PromptDialog({ s, pr, act }: { s: GameState; pr: Prompt; act: (a: Actio
       );
     case 'card':
       return (
-        <Dialog title={pr.title} wide>
+        <Sheet title={pr.title} summary={<span className="muted">Tap a card to choose it.</span>}
+          actions={pr.optional ? <button type="button" className="btn ghost" onClick={() => act({ t: 'answer', card: null })}>Skip</button> : undefined}>
           <div className="pick-grid">
             {pr.options.map((id) => {
               const owner = s.players.find((q) => inPlay(s, q.id, id));
@@ -717,8 +805,7 @@ function PromptDialog({ s, pr, act }: { s: GameState; pr: Prompt; act: (a: Actio
               return <Card key={id} id={id} resources={owner.cardRes[id] ?? 0} onClick={() => act({ t: 'answer', card: id })} footer={owner.id !== pr.pid ? <div className="card-owner" style={{ color: owner.color }}>{owner.name}</div> : undefined} />;
             })}
           </div>
-          {pr.optional && <button type="button" className="btn ghost" onClick={() => act({ t: 'answer', card: null })}>Skip</button>}
-        </Dialog>
+        </Sheet>
       );
     case 'choice':
       return (
@@ -732,14 +819,16 @@ function PromptDialog({ s, pr, act }: { s: GameState; pr: Prompt; act: (a: Actio
       const toggle = (id: string) => setSel((x) => (x.includes(id) ? x.filter((y) => y !== id) : x.length >= pr.max ? [...x.slice(1), id] : [...x, id]));
       const ok = sel.length >= pr.min && sel.length <= pr.max && sel.length * pr.costEach <= s.players[pr.pid].res.mc;
       return (
-        <Dialog title={pr.title} wide footer={<button type="button" className="btn" disabled={!ok} onClick={() => act({ t: 'answer', cards: sel })}>
-          {pr.costEach ? (sel.length ? `Buy for ${sel.length * pr.costEach} M€` : 'Discard it') : pr.item.op.k === 'discardDraw' ? (sel.length ? 'Discard and draw' : 'Keep my hand') : `Keep ${sel.length}`}
-        </button>}>
+        <Sheet title={pr.title}
+          summary={<span className="muted">{pr.min === pr.max ? `Choose ${pr.max}` : `Choose ${pr.min ? `${pr.min} to ` : 'up to '}${pr.max}`} · {sel.length} chosen{pr.costEach ? ` · ${sel.length * pr.costEach} M€ of your ${s.players[pr.pid].res.mc} M€` : ''}</span>}
+          actions={<button type="button" className="btn" disabled={!ok} onClick={() => act({ t: 'answer', cards: sel })}>
+            {pr.costEach ? (sel.length ? `Buy for ${sel.length * pr.costEach} M€` : 'Discard it') : pr.item.op.k === 'discardDraw' ? (sel.length ? 'Discard and draw' : 'Keep my hand') : `Keep ${sel.length}`}
+          </button>}>
           {pr.max === 0 && pr.costEach > 0 && <p className="warn">You can’t afford it, so it will be discarded.</p>}
           <div className="pick-grid">
             {pr.cards.map((id, i) => <Card key={id} id={id} s={s} pid={pr.pid} index={i} selected={sel.includes(id)} onClick={pr.max > 0 ? () => toggle(id) : undefined} />)}
           </div>
-        </Dialog>
+        </Sheet>
       );
     }
     case 'amount':
@@ -788,17 +877,12 @@ function SeatsDialog({ s, online, onClose }: { s: GameState; online: OnlineLink;
 }
 
 // ---------------- tableau ----------------
-function TableauDialog({ s, pid, onClose }: { s: GameState; pid: number; onClose: () => void }) {
+function TableauDialog({ s, pid, viewer, onClose }: { s: GameState; pid: number; viewer: number | null; onClose: () => void }) {
   const p = s.players[pid];
-  const [showEvents, setShowEvents] = useState(false);
-  const cards = p.played.filter((id) => showEvents || CARDS[id].type !== 'event');
+  const [view, setView] = useState<TableauView>(() => (loadTableauView() === 'grid' ? 'grid' : 'stack'));
   return (
-    <Dialog title={`${p.name}: cards in play`} onClose={onClose} wide>
-      <div className="pick-grid">
-        {p.corp && <Card id={p.corp} resources={p.cardRes[p.corp]} />}
-        {cards.map((id) => <Card key={id} id={id} s={s} pid={pid} resources={p.cardRes[id]} compact={CARDS[id].type === 'event'} />)}
-      </div>
-      <label className="check"><input type="checkbox" checked={showEvents} onChange={(e) => setShowEvents(e.target.checked)} /> Show played events ({p.played.filter((id) => CARDS[id].type === 'event').length})</label>
+    <Dialog title={`${pid === viewer ? 'Your' : `${p.name}’s`} cards in play`} onClose={onClose} wide>
+      <Tableau s={s} pid={pid} view={view} setView={setView} title={p.corp ? CARDS[p.corp].name : 'Cards'} />
     </Dialog>
   );
 }
