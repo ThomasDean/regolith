@@ -2,7 +2,7 @@ import { useRef } from 'react';
 import type { GameState } from '../engine/types';
 import { CARDS } from '../engine/cards';
 import { cardCost, cardVP, requirementsMet } from '../engine/queries';
-import { reqText } from './format';
+import { reqText, resLabel } from './format';
 import { CardArt } from './CardArt';
 import { TagIcon } from './Icons';
 import { CardFx, ReqFx } from './Symbols';
@@ -78,7 +78,9 @@ export function Card({ id, s, pid, resources, compact, selected, dim, onClick, f
           </span>
         )}
         {vp !== null && <span className="card-vp" title={c.vpText ?? 'Victory points'}>{vp}<small>VP</small></span>}
-        {resources !== undefined && resources > 0 && <span className="card-res" title={`${resources} ${c.resource}${resources === 1 ? '' : 's'}`}>{resources}<small>{c.resource}</small></span>}
+        {resources !== undefined && c.resource && (
+          <span className={`card-res ${resources ? '' : 'zero'}`} title={`${resources} ${resLabel(c.resource, resources)} on this card`}>{resources}<small>{resLabel(c.resource, resources)}</small></span>
+        )}
       </div>
       <div className="card-title">
         <span className="card-name">{c.name}</span>

@@ -19,26 +19,26 @@ for (const name of ['Prelude', 'Venus Next', 'Colonies', 'Turmoil']) await d.loc
 await d.locator('.exp-pick').scrollIntoViewIfNeeded();
 await d.screenshot({ path: `${out}/x1-menu.png` });
 await d.getByRole('button', { name: 'Start game' }).click();
-await d.waitForSelector('.dialog');
+await d.waitForSelector(':is(.dialog, .sheet)');
 await d.screenshot({ path: `${out}/x2-setup.png`, fullPage: false });
 // two preludes, three cards
-const grids = d.locator('.dialog .pick-grid:not(.corps)');
+const grids = d.locator(':is(.dialog, .sheet) .pick-grid:not(.corps)');
 await grids.nth(0).locator('.card').nth(0).click();
 await grids.nth(0).locator('.card').nth(1).click();
 for (let i = 0; i < 3; i++) await grids.nth(1).locator('.card').nth(i).click();
 await d.getByRole('button', { name: /^Start with/ }).click();
 // prelude phase: wait for our dialog
-await d.waitForSelector('.dialog >> text=play your preludes', { timeout: 20000 });
+await d.waitForSelector(':is(.dialog, .sheet) >> text=play your preludes', { timeout: 20000 });
 await d.screenshot({ path: `${out}/x3-preludes.png` });
 for (let k = 0; k < 2; k++) {
-  await d.locator('.dialog .pick-grid .card').first().click();
+  await d.locator(':is(.dialog, .sheet) .pick-grid .card').first().click();
   await d.waitForTimeout(600);
   // answer any follow-up (tile placement, choices) at random
   for (let j = 0; j < 6; j++) {
     const hex = d.locator('.hex.pickable, .offworld-space.pickable');
     if (await hex.count()) { await hex.first().click(); await d.waitForTimeout(300); continue; }
-    const btn = d.locator('.dialog .choice-list button:not([disabled]), .dialog .pick-grid .card');
-    if (await d.locator('.dialog >> text=play your preludes').count()) break;
+    const btn = d.locator(':is(.dialog, .sheet) .choice-list button:not([disabled]), .dialog .pick-grid .card');
+    if (await d.locator(':is(.dialog, .sheet) >> text=play your preludes').count()) break;
     if (await btn.count()) { await btn.first().click(); await d.waitForTimeout(300); continue; }
     break;
   }
@@ -52,7 +52,7 @@ let clicks = 0;
 for (let i = 0; i < Number(process.argv[4] ?? 600); i++) {
   await d.waitForTimeout(15);
   if (await d.locator('.scores').count()) break;
-  const targets = d.locator('.dialog button:not([disabled]), .dialog .card, .hex.pickable, .offworld-space.pickable, .actionbar button:not([disabled]), .final-bar button:not([disabled]), .xpanel button:not([disabled])');
+  const targets = d.locator(':is(.dialog, .sheet) button:not([disabled]), :is(.dialog, .sheet) .card, .hex.pickable, .offworld-space.pickable, .actionbar button:not([disabled]), .final-bar button:not([disabled]), .xpanel button:not([disabled])');
   const n = await targets.count();
   if (!n) { await d.waitForTimeout(150); continue; }
   const pick = targets.nth(Math.floor(Math.random() * n));

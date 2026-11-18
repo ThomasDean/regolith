@@ -7,8 +7,8 @@ import { CARDS } from '../engine/cards';
 import { inPlay } from '../engine/helpers';
 import { cpuAction } from '../engine/ai/cpu';
 import {
-  activeCards, autoPay, availableSpaces, awardCost, gameAwards, awardPlaces, canClaimMilestone, canFundAward, canPlayCard, canSP,
-  cardActionAvailable, cardCost, checkPayment, greeneryCost, maxSpend, MILESTONE_COST, gameMilestones, opsFeasible, payLimitsForCard,
+  activeCards, autoPay, availableSpaces, canPlayCard, canSP,
+  cardActionAvailable, cardCost, checkPayment, greeneryCost, maxSpend, opsFeasible, payLimitsForCard,
   requirementsMet, score, spCost, SP_NAME, steelValue, titaniumValue, type PayLimits, buyCost, spList, redsTax, payStock,
 } from '../engine/queries';
 import { ColoniesPanel, TurmoilPanel } from './Expansions';
@@ -20,8 +20,13 @@ import { ResIcon } from './Icons';
 import { Dialog } from './Dialog';
 import { HowToPlay } from './HowToPlay';
 import { Gauges } from './Gauges';
-import { Players, ResourceGrid } from './Players';
-import { fmtTemp, RES_LABEL } from './format';
+import { MeBar, Players } from './Players';
+import { Sheet } from './Sheet';
+import { loadTableauView, Tableau, type TableauView } from './Tableau';
+import { MAPanel } from './MA';
+import { LogPanel } from './LogPanel';
+import { buildReplay, loadSeen, replayStart, saveSeen, type Replay } from './replay';
+import { fmtTemp, RES_LABEL, resLabel } from './format';
 import { cloudEnabled, currentCloudId, putSave, useSession } from '../cloud';
 import { BannerView, CardShowcase, Confetti, diffEvents, FxContext, loadFxSetting, saveFxSetting, Toasts, type Banner, type Showcase, type Toast } from './Fx';
 import type { SeatRow } from '../online/protocol';
@@ -66,10 +71,14 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
   const [viewCards, setViewCards] = useState<number | null>(null);
   const [openCard, setOpenCard] = useState<string | null>(null);
   const [panel, setPanel] = useState<null | 'projects' | 'sell' | 'confirmPass'>(null);
+  const [tabView, setTabView] = useState<TableauView>(loadTableauView);
+  // catch-up replay: while it runs, the table shows rebuilt earlier frames and nobody can act
+  const [replay, setReplay] = useState<{ r: Replay; i: number; playing: boolean } | null>(null);
+  const view = replay ? replay.r.frames[replay.i] : s;
   const decider = deciderOf(s);
   const dp = s.players[decider];
   const over = s.phase === 'over';
-  const myTurn = !over && !dp.cpu && viewer === decider;
+  const myTurn = !over && !dp.cpu && viewer === decider && !replay;
 
   const lastOp = useRef<'act' | 'undo' | null>(null);
   const [sending, setSending] = useState(false);
@@ -130,7 +139,7 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
   const [banner, setBanner] = useState<Banner | null>(null);
   const [fresh, setFresh] = useState<string[]>([]);
   const [pulse, setPulse] = useState<{ kind: 'temp' | 'oxy' | 'ocean'; key: number } | null>(null);
-  const prevS = useRef(s);
+  const prevS = useRef(view);
   const fxKey = useRef(0);
   const holdRef = useRef(0);
   const pushToast = useCallback((t: Omit<Toast, 'id'>) => {
@@ -140,6 +149,7 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
   }, []);
   useEffect(() => {
     const a = prevS.current;
+    const s = view;
     prevS.current = s;
     const op = lastOp.current;
     lastOp.current = null;
@@ -187,7 +197,7 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
       setBanner({ key: ++fxKey.current, tone: 'turn', title: 'Your turn' });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s]);
+  }, [view]);
   const toggleFx = () => setFxOn((v) => { saveFxSetting(!v); if (v) setShow(null); return !v; });
   const endShow = useCallback(() => setShow(null), []);
   const endBanner = useCallback(() => setBanner(null), []);
@@ -199,8 +209,9 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
   advanceRef.current = online?.advance;
   const onlineVersion = online?.version;
   const onlineHost = online?.host;
+  const replaying = !!replay;
   useEffect(() => {
-    if (over || !dp.cpu) return;
+    if (over || !dp.cpu || replaying) return;
     const base = s.prompt ? Math.min(250, cpuSpeed) : cpuSpeed;
     if (onlineVersion !== undefined) {
       const v = onlineVersion;
@@ -209,10 +220,10 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
     }
     const t = setTimeout(() => act(cpuAction(s, dp.cpu!)), base + holdRef.current);
     return () => clearTimeout(t);
-  }, [s, over, dp.cpu, act, cpuSpeed, onlineVersion, onlineHost]);
+  }, [s, over, dp.cpu, act, cpuSpeed, onlineVersion, onlineHost, replaying]);
 
   // with several humans, hide hands between them
-  const needsHandoff = !online && !over && !dp.cpu && viewer !== decider;
+  const needsHandoff = !online && !over && !dp.cpu && viewer !== decider && !replay;
   useEffect(() => {
     if (needsHandoff && humans.length === 1) setViewer(decider);
   }, [needsHandoff, humans.length, decider]);
@@ -224,9 +235,9 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
 
   // online, corporation and research picks are made at the same time, not in turn order
   const meP = viewer !== null ? s.players[viewer] : null;
-  const picking = online
+  const picking = !replay && (online
     ? !!meP && !s.prompt && !online.queued.includes(meP.id) && ((s.phase === 'setup' && !!meP.setup) || (s.phase === 'research' && !!meP.research))
-    : myTurn;
+    : myTurn);
   const canAct = myTurn && !sending;
   const pr = canAct ? s.prompt : null;
   const [seatsOpen, setSeatsOpen] = useState(false);
@@ -248,6 +259,62 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
   // online, your turn is done once the game stops waiting on you: offer the next game
   const turnDone = !!online && !over && online.seat >= 0 && !!me && !me.forfeited && !online.waiting.includes(online.seat) && !sending;
   const gameKey = online ? `regolith:room:${online.room}` : saveId ? `regolith:local:${saveId}` : null;
+
+  // what this device last showed: moves made while you were away can be replayed to catch up
+  const latestN = s.log[s.log.length - 1]?.n ?? -1;
+  const latestRef = useRef(latestN);
+  latestRef.current = latestN;
+  /** log entries (by running number) made while this game wasn't on screen */
+  const [missed, setMissed] = useState<{ after: number; upTo: number } | null>(() => {
+    const seen = gameKey ? loadSeen(gameKey) : null;
+    return seen !== null && seen < latestN ? { after: seen, upTo: latestN } : null;
+  });
+  useEffect(() => { if (gameKey && document.visibilityState !== 'hidden') saveSeen(gameKey, latestN); }, [gameKey, latestN]);
+  useEffect(() => {
+    let hiddenAt: number | null = null;
+    const onVis = () => {
+      if (document.visibilityState === 'hidden') hiddenAt = latestRef.current;
+      else if (hiddenAt !== null) {
+        const after = hiddenAt;
+        hiddenAt = null;
+        if (latestRef.current > after) setMissed((m) => ({ after: m ? Math.min(m.after, after) : after, upTo: latestRef.current }));
+        if (gameKey) saveSeen(gameKey, latestRef.current);
+      }
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [gameKey]);
+  const missedFrom = missed ? s.log.findIndex((l) => (l.n ?? -1) > missed.after) : -1;
+  const catchUp = missedFrom < 0 ? 0 : s.log.slice(missedFrom).filter((l) => (l.n ?? -1) <= missed!.upTo && l.pid !== null && l.pid !== viewer).length;
+  const startReplay = () => {
+    const from = catchUp > 0 ? Math.max(missedFrom, s.log.length - 40) : replayStart(s, viewer);
+    if (from >= s.log.length) return;
+    setMissed(null);
+    setShow(null); setBanner(null);
+    setReplay({ r: buildReplay(s, from), i: 0, playing: true });
+  };
+  const stopReplay = useCallback(() => setReplay(null), []);
+  useEffect(() => {
+    if (!replay || !replay.playing) return;
+    const last = replay.r.frames.length - 1;
+    const next = s.log[replay.r.from + replay.i];
+    const pace = cpuSpeed >= 900 ? 1.3 : cpuSpeed <= 120 ? 0.6 : 1;
+    const busy = next?.fx?.p?.some((e) => e.played?.length || e.corp) ? 1900 : next?.fx?.tiles ? 1300 : 900;
+    const delay = replay.i >= last ? 900 : (replay.i === 0 ? 600 : 0) + (fxOn ? busy : 700) * pace;
+    const t = setTimeout(() => {
+      if (replay.i >= last) { setReplay(null); return; }
+      lastOp.current = 'act';
+      setReplay({ ...replay, i: replay.i + 1 });
+    }, delay);
+    return () => clearTimeout(t);
+  }, [replay, s.log, cpuSpeed, fxOn]);
+  const stepReplay = () => {
+    if (!replay) return;
+    if (replay.i >= replay.r.frames.length - 1) { setReplay(null); return; }
+    lastOp.current = 'act';
+    setReplay({ ...replay, i: replay.i + 1, playing: false });
+  };
+  const replayEntry = replay && replay.i > 0 ? s.log[replay.r.from + replay.i - 1] : null;
 
   return (
     <FxContext.Provider value={fxOn}>
@@ -280,6 +347,8 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
           ) : (
             <button type="button" className="btn ghost" onClick={undo} disabled={!canUndo} title="Undo your last step (not after cards are drawn)">Undo</button>
           )}
+          <button type="button" className="btn ghost" onClick={replay ? stopReplay : startReplay} disabled={!replay && !s.log.length}
+            title="Watch the latest moves again on the board">{replay ? 'Stop replay' : 'Replay'}</button>
           {hasExpansions && <button type="button" className="btn ghost" onClick={() => setHelp(true)} title="How to play this game's expansions">How to play</button>}
           {forfeitable.length > 0 && <button type="button" className="btn ghost" onClick={() => setForfeiting(true)}>Forfeit</button>}
           <NextGameButton current={gameKey} turnDone={turnDone} />
@@ -287,22 +356,24 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
         </div>
       </header>
 
+      {me && <MeBar s={view} pid={me.id} />}
+
       {error && <div className="error" role="alert">{error}<button type="button" className="icon-btn" onClick={() => setError(null)} aria-label="Dismiss">×</button></div>}
 
       <main className="table">
         <div className="map-col">
-          <Gauges s={s} />
+          <Gauges s={view} />
           <div className="map-area">
             {spacePrompt && <div className="place-banner" role="status">{spacePrompt.title}: choose a highlighted space.</div>}
-            <Board s={s} options={spacePrompt?.options} onPick={(id) => act({ t: 'answer', space: id })} fresh={fresh} pulse={fxOn ? pulse : null} />
+            <Board s={view} options={spacePrompt?.options} onPick={(id) => act({ t: 'answer', space: id })} fresh={fresh} pulse={fxOn ? pulse : null} />
           </div>
         </div>
 
         <aside className="side">
-          <Players s={s} viewer={viewer} onView={setViewCards} queued={online?.queued} />
-          <ColoniesPanel s={s} viewer={viewer} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} act={act} />
-          <TurmoilPanel s={s} viewer={viewer} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} act={act} />
-          <Log s={s} />
+          <Players s={view} viewer={viewer} onView={setViewCards} queued={online?.queued} />
+          <MAPanel s={view} viewer={viewer} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} act={act} />
+          <ColoniesPanel s={view} viewer={viewer} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} act={act} />
+          <TurmoilPanel s={view} viewer={viewer} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} act={act} />
         </aside>
 
         <section className="desk">
@@ -321,8 +392,9 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
           {me && (
             <Hand s={s} pid={me.id} onOpen={setOpenCard} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} />
           )}
+          {me && <Tableau s={view} pid={me.id} view={tabView} setView={setTabView} title="Your cards in play" />}
           {!me && !over && <p className="muted pad">{online ? 'You are watching this game.' : 'Hands stay hidden until a player takes the device.'}</p>}
-          {online && me && !over && !picking && !myTurn && (s.phase === 'setup' || s.phase === 'research') && (
+          {online && me && !over && !picking && !myTurn && !replay && (s.phase === 'setup' || s.phase === 'research') && (
             <p className="muted pad waiting-note" role="status">Your {s.phase === 'setup' ? 'corporation' : 'research'} is in. It applies when your turn comes round.</p>
           )}
         </section>
@@ -340,7 +412,7 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
       {seatsOpen && online && <SeatsDialog s={s} online={online} onClose={() => setSeatsOpen(false)} />}
       {pr && pr.kind !== 'space' && <PromptDialog s={s} pr={pr} act={act} />}
       {openCard && me && <CardDialog s={s} pid={me.id} id={openCard} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} onClose={() => setOpenCard(null)} act={(a) => { setOpenCard(null); act(a); }} />}
-      {viewCards !== null && <TableauDialog s={s} pid={viewCards} onClose={() => setViewCards(null)} />}
+      {viewCards !== null && <TableauDialog s={view} pid={viewCards} viewer={viewer} onClose={() => setViewCards(null)} />}
       {panel === 'sell' && me && <SellDialog s={s} pid={me.id} onClose={() => setPanel(null)} act={(a) => { setPanel(null); act(a); }} />}
       {forfeiting && (
         <ForfeitDialog seats={forfeitable} initial={viewer ?? decider} onClose={() => setForfeiting(false)} onConfirm={doForfeit}
@@ -349,9 +421,23 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
       {help && <HowToPlay onClose={() => setHelp(false)} inGame={s.options.expansions} />}
       {over && <GameOver s={s} onExit={onExit} />}
       {over && fxOn && <Confetti colors={s.players.map((p) => p.color)} />}
-      {show && <CardShowcase key={show.key} show={show} s={s} onDone={endShow} fast={cpuSpeed <= 120} />}
+      {show && <CardShowcase key={show.key} show={show} s={view} onDone={endShow} fast={cpuSpeed <= 120} />}
       {banner && <BannerView key={banner.key} b={banner} onDone={endBanner} />}
-      <Toasts items={toasts} s={s} />
+      <Toasts items={toasts} s={view} />
+      {replay && (
+        <div className="replay-bar" role="status" aria-live="polite">
+          <span className="replay-count">Replay {replay.i}/{replay.r.frames.length - 1}</span>
+          <span className="replay-text" style={replayEntry?.pid != null ? { ['--pc' as string]: s.players[replayEntry.pid].color } : undefined}>
+            {replayEntry ? (replayEntry.text || `${s.players[replayEntry.pid ?? 0]?.name ?? ''}: effect resolved`) : 'Starting…'}
+          </span>
+          <span className="replay-tools">
+            <button type="button" className="btn small ghost" onClick={() => setReplay({ ...replay, playing: !replay.playing })}>{replay.playing ? 'Pause' : 'Play'}</button>
+            <button type="button" className="btn small ghost" onClick={stepReplay}>Next</button>
+            <button type="button" className="btn small" onClick={stopReplay}>Done</button>
+          </span>
+        </div>
+      )}
+      <LogPanel s={view} viewer={viewer} onReplay={replay ? undefined : startReplay} catchUp={replay ? 0 : catchUp} onDismissCatchUp={() => setMissed(null)} />
     </div>
     </FxContext.Provider>
   );
@@ -368,9 +454,10 @@ function Status({ s, viewer, online }: { s: GameState; viewer: number | null; on
     text = ids.length === 1 && ids[0] === viewer ? `Your move: ${what}` : `Waiting on ${names(ids)}: ${what}`;
     return <div className="status" role="status" aria-live="polite" style={{ ['--pc' as string]: s.players[ids[0]].color }}><span className="swatch" />{text}</div>;
   }
+  const isYou = d.id === viewer && !d.cpu;
   if (s.phase === 'over') text = 'Game over';
-  else if (s.phase === 'setup') text = `${d.name} is choosing a corporation`;
-  else if (s.phase === 'research') text = `${d.name} is buying research cards`;
+  else if (s.phase === 'setup') text = isYou ? 'Choose your corporation' : `${d.name} is choosing a corporation`;
+  else if (s.phase === 'research') text = isYou ? 'Buy your research cards' : `${d.name} is buying research cards`;
   else if (s.phase === 'prelude') text = `${d.name} is playing preludes`;
   else if (s.phase === 'finalGreenery') text = `${d.name} is placing final greeneries`;
   else text = `${d.name}'s turn`;
@@ -378,21 +465,6 @@ function Status({ s, viewer, online }: { s: GameState; viewer: number | null; on
   else if (viewer === d.id && s.phase === 'action') text = 'Your turn';
   else if (online && s.phase !== 'over' && !d.cpu) text = `Waiting on ${d.name}`;
   return <div className="status" role="status" aria-live="polite" style={{ ['--pc' as string]: d.color }}><span className="swatch" />{text}</div>;
-}
-
-// ---------------- log ----------------
-function Log({ s }: { s: GameState }) {
-  const items = s.log.slice(-40).reverse();
-  return (
-    <section className="log" aria-label="Game log">
-      <h3>Log</h3>
-      <ol>
-        {items.map((l, i) => (
-          <li key={s.log.length - i} style={l.pid !== null ? { ['--pc' as string]: s.players[l.pid].color } : undefined} className={l.pid === null ? 'sys' : ''}>{l.text}</li>
-        ))}
-      </ol>
-    </section>
-  );
 }
 
 // ---------------- hand ----------------
@@ -413,7 +485,6 @@ function Hand({ s, pid, onOpen, canAct }: { s: GameState; pid: number; onOpen: (
     <section className="hand" aria-label="Your hand">
       <div className="hand-head">
         <h3>Your hand <span className="muted">({p.hand.length})</span></h3>
-        <ResourceGrid s={s} pid={pid} />
         <label className="sort">Sort
           <select value={sort} onChange={(e) => setSort(e.target.value as 'playable' | 'cost')}>
             <option value="playable">Playable first</option>
@@ -534,42 +605,13 @@ function ActionBar({ s, pid, myTurn, act, panel, setPanel }: { s: GameState; pid
               return (
                 <button key={c.id} type="button" className="btn small" disabled={!myTurn || !avail} title={c.action!.text}
                   onClick={() => act({ t: 'cardAction', card: c.id, pay: c.action!.mc ? autoPay(s, pid, c.action!.mc, lim) ?? undefined : undefined })}>
-                  {c.name}{used ? ' (used)' : ''}<span className="chip-sub">{actionLine(c.id) ? <FxLine l={actionLine(c.id)!} /> : c.action!.text}</span>
+                  {c.name}{used ? ' (used)' : ''}{c.resource && <span className="chip-res" title={`${p.cardRes[c.id] ?? 0} ${resLabel(c.resource, p.cardRes[c.id] ?? 0)} on this card`}>{p.cardRes[c.id] ?? 0} {resLabel(c.resource, p.cardRes[c.id] ?? 0)}</span>}<span className="chip-sub">{actionLine(c.id) ? <FxLine l={actionLine(c.id)!} /> : c.action!.text}</span>
                 </button>
               );
             })}
           </div>
         </div>
       )}
-      <div className="ab-group">
-        <h3>Milestones <span className="muted">{MILESTONE_COST} M€, {3 - s.milestones.length} left</span></h3>
-        <div className="chips">
-          {gameMilestones(s).map((m) => {
-            const owner = s.milestones.find((x) => x.id === m.id);
-            return (
-              <button key={m.id} type="button" className="btn small" disabled={!myTurn || !canClaimMilestone(s, pid, m.id)} onClick={() => act({ t: 'milestone', id: m.id, pay: payHelion(MILESTONE_COST) })}
-                style={owner ? { ['--pc' as string]: s.players[owner.pid].color } : undefined} data-owned={owner ? 'yes' : undefined}>
-                {m.name}<span className="chip-sub">{owner ? `Claimed by ${s.players[owner.pid].name}` : `${m.text} (you: ${m.metric(s, pid)})`}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-      <div className="ab-group">
-        <h3>Awards <span className="muted">{s.awards.length < 3 ? `${awardCost(s)} M€, ${3 - s.awards.length} left` : 'all funded'}</span></h3>
-        <div className="chips">
-          {gameAwards(s).map((a) => {
-            const funded = s.awards.find((x) => x.id === a.id);
-            const lead = awardPlaces(s, a.id).first.map((i) => s.players[i].name).join(', ');
-            return (
-              <button key={a.id} type="button" className="btn small" disabled={!myTurn || !canFundAward(s, pid, a.id)} onClick={() => act({ t: 'award', id: a.id, pay: payHelion(awardCost(s)) })}
-                style={funded ? { ['--pc' as string]: s.players[funded.pid].color } : undefined} data-owned={funded ? 'yes' : undefined}>
-                {a.name}<span className="chip-sub">{a.text}. {funded ? 'Funded. ' : ''}Leading: {lead}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
       <div className="ab-turn">
         {s.actionsThisTurn >= 1 && <button type="button" className="btn ghost" disabled={!myTurn} onClick={() => act({ t: 'endTurn' })}>End turn</button>}
         {panel === 'confirmPass' ? (
@@ -614,11 +656,9 @@ function SetupDialog({ s, pid, act, onHelp }: { s: GameState; pid: number; act: 
   const togglePre = (id: string) => setPre((x) => (x.includes(id) ? x.filter((y) => y !== id) : x.length >= 2 ? [x[1], id] : [...x, id]));
   const needPre = !!su.preludes && pre.length !== 2;
   return (
-    <Dialog title={`${p.name}: found your corporation`} wide
-      footer={<>
-        <span className={cost > start || needPre ? 'warn' : 'muted'}>{needPre ? `Choose 2 preludes (${pre.length} chosen). ` : ''}{beginner ? 'All 10 cards are free with the beginner corporation.' : `${keep.length} cards cost ${cost} M€, leaving ${start - cost} M€.`}</span>
-        <button type="button" className="btn" disabled={cost > start || needPre} onClick={() => act({ t: 'setup', corp, keep: beginner ? [] : keep, ...(su.preludes ? { preludes: pre } : {}) })}>Start with {CARDS[corp].name}</button>
-      </>}>
+    <Sheet title={`${p.name}: found your corporation`}
+      summary={<span className={cost > start || needPre ? 'warn' : 'muted'}>{needPre ? `Choose 2 preludes (${pre.length} chosen). ` : ''}{beginner ? 'All 10 cards are free with the beginner corporation.' : `${keep.length} cards cost ${cost} M€, leaving ${start - cost} M€.`}</span>}
+      actions={<button type="button" className="btn" disabled={cost > start || needPre} onClick={() => act({ t: 'setup', corp, keep: beginner ? [] : keep, ...(su.preludes ? { preludes: pre } : {}) })}>Start with {CARDS[corp].name}</button>}>
       <h3>Corporation</h3>
       <div className="pick-grid corps">
         {su.corps.map((c, i) => <Card key={c} id={c} index={i} selected={corp === c} onClick={() => setCorp(c)} />)}
@@ -636,7 +676,7 @@ function SetupDialog({ s, pid, act, onHelp }: { s: GameState; pid: number; act: 
         {su.cards.map((id, i) => <Card key={id} id={id} index={i + 2} selected={beginner || keep.includes(id)} onClick={beginner ? undefined : () => toggle(id)} />)}
       </div>
       {onHelp && <HelpLink onHelp={onHelp} />}
-    </Dialog>
+    </Sheet>
   );
 }
 
@@ -647,12 +687,10 @@ function ResearchDialog({ s, pid, act, onHelp }: { s: GameState; pid: number; ac
   const price = buyCost(s, pid);
   const cost = keep.length * price;
   return (
-    <Dialog title={`${p.name}: research for generation ${s.generation}`} wide
-      footer={<>
-        <span className={cost > p.res.mc ? 'warn' : 'muted'}>{cost} M€ of your {p.res.mc} M€</span>
-        <button type="button" className="btn" disabled={cost > p.res.mc} onClick={() => act({ t: 'research', keep })}>{keep.length ? `Buy ${keep.length}` : 'Buy none'}</button>
-      </>}>
-      <p>Buy any of these cards for {price} M€ each. The rest are discarded.</p>
+    <Sheet title={`Research for generation ${s.generation}`}
+      summary={<span className={cost > p.res.mc ? 'warn' : 'muted'}>{keep.length} chosen · {cost} M€ of your {p.res.mc} M€</span>}
+      actions={<button type="button" className="btn" disabled={cost > p.res.mc} onClick={() => act({ t: 'research', keep })}>{keep.length ? `Buy ${keep.length}` : 'Buy none'}</button>}>
+      <p className="muted">{p.name}: buy any of these cards for {price} M€ each. The rest are discarded.</p>
       <div className="pick-grid">
         {(p.research ?? []).map((id, i) => <Card key={id} id={id} s={s} pid={pid} index={i} selected={keep.includes(id)} onClick={() => toggle(id)} />)}
       </div>
@@ -660,7 +698,7 @@ function ResearchDialog({ s, pid, act, onHelp }: { s: GameState; pid: number; ac
         <div className="pick-grid">{p.hand.map((id) => <Card key={id} id={id} s={s} pid={pid} compact />)}</div>
       </details>
       {onHelp && <HelpLink onHelp={onHelp} />}
-    </Dialog>
+    </Sheet>
   );
 }
 
@@ -671,8 +709,8 @@ const HelpLink = ({ onHelp }: { onHelp: () => void }) => (
 function PreludeDialog({ s, pid, act }: { s: GameState; pid: number; act: (a: Action) => void }) {
   const p = s.players[pid];
   return (
-    <Dialog title={`${p.name}: play your preludes`} wide>
-      <p>Play them in either order. One that can’t be played in full is swapped for 15 M€.</p>
+    <Sheet title={`${p.name}: play your preludes`} summary={<span className="muted">Tap one to play it.</span>}>
+      <p className="muted">Play them in either order. One that can’t be played in full is swapped for 15 M€.</p>
       <div className="pick-grid">
         {(p.preludes ?? []).map((id, i) => <Card key={id} id={id} s={s} pid={pid} index={i} onClick={() => act({ t: 'prelude', card: id })} />)}
       </div>
@@ -681,7 +719,7 @@ function PreludeDialog({ s, pid, act }: { s: GameState; pid: number; act: (a: Ac
           <div className="pick-grid">{p.hand.map((id) => <Card key={id} id={id} s={s} pid={pid} compact />)}</div>
         </details>
       )}
-    </Dialog>
+    </Sheet>
   );
 }
 
@@ -709,7 +747,8 @@ function PromptDialog({ s, pr, act }: { s: GameState; pr: Prompt; act: (a: Actio
       );
     case 'card':
       return (
-        <Dialog title={pr.title} wide>
+        <Sheet title={pr.title} summary={<span className="muted">Tap a card to choose it.</span>}
+          actions={pr.optional ? <button type="button" className="btn ghost" onClick={() => act({ t: 'answer', card: null })}>Skip</button> : undefined}>
           <div className="pick-grid">
             {pr.options.map((id) => {
               const owner = s.players.find((q) => inPlay(s, q.id, id));
@@ -717,8 +756,7 @@ function PromptDialog({ s, pr, act }: { s: GameState; pr: Prompt; act: (a: Actio
               return <Card key={id} id={id} resources={owner.cardRes[id] ?? 0} onClick={() => act({ t: 'answer', card: id })} footer={owner.id !== pr.pid ? <div className="card-owner" style={{ color: owner.color }}>{owner.name}</div> : undefined} />;
             })}
           </div>
-          {pr.optional && <button type="button" className="btn ghost" onClick={() => act({ t: 'answer', card: null })}>Skip</button>}
-        </Dialog>
+        </Sheet>
       );
     case 'choice':
       return (
@@ -732,14 +770,16 @@ function PromptDialog({ s, pr, act }: { s: GameState; pr: Prompt; act: (a: Actio
       const toggle = (id: string) => setSel((x) => (x.includes(id) ? x.filter((y) => y !== id) : x.length >= pr.max ? [...x.slice(1), id] : [...x, id]));
       const ok = sel.length >= pr.min && sel.length <= pr.max && sel.length * pr.costEach <= s.players[pr.pid].res.mc;
       return (
-        <Dialog title={pr.title} wide footer={<button type="button" className="btn" disabled={!ok} onClick={() => act({ t: 'answer', cards: sel })}>
-          {pr.costEach ? (sel.length ? `Buy for ${sel.length * pr.costEach} M€` : 'Discard it') : pr.item.op.k === 'discardDraw' ? (sel.length ? 'Discard and draw' : 'Keep my hand') : `Keep ${sel.length}`}
-        </button>}>
+        <Sheet title={pr.title}
+          summary={<span className="muted">{pr.min === pr.max ? `Choose ${pr.max}` : `Choose ${pr.min ? `${pr.min} to ` : 'up to '}${pr.max}`} · {sel.length} chosen{pr.costEach ? ` · ${sel.length * pr.costEach} M€ of your ${s.players[pr.pid].res.mc} M€` : ''}</span>}
+          actions={<button type="button" className="btn" disabled={!ok} onClick={() => act({ t: 'answer', cards: sel })}>
+            {pr.costEach ? (sel.length ? `Buy for ${sel.length * pr.costEach} M€` : 'Discard it') : pr.item.op.k === 'discardDraw' ? (sel.length ? 'Discard and draw' : 'Keep my hand') : `Keep ${sel.length}`}
+          </button>}>
           {pr.max === 0 && pr.costEach > 0 && <p className="warn">You can’t afford it, so it will be discarded.</p>}
           <div className="pick-grid">
             {pr.cards.map((id, i) => <Card key={id} id={id} s={s} pid={pr.pid} index={i} selected={sel.includes(id)} onClick={pr.max > 0 ? () => toggle(id) : undefined} />)}
           </div>
-        </Dialog>
+        </Sheet>
       );
     }
     case 'amount':
@@ -788,17 +828,12 @@ function SeatsDialog({ s, online, onClose }: { s: GameState; online: OnlineLink;
 }
 
 // ---------------- tableau ----------------
-function TableauDialog({ s, pid, onClose }: { s: GameState; pid: number; onClose: () => void }) {
+function TableauDialog({ s, pid, viewer, onClose }: { s: GameState; pid: number; viewer: number | null; onClose: () => void }) {
   const p = s.players[pid];
-  const [showEvents, setShowEvents] = useState(false);
-  const cards = p.played.filter((id) => showEvents || CARDS[id].type !== 'event');
+  const [view, setView] = useState<TableauView>(() => (loadTableauView() === 'grid' ? 'grid' : 'stack'));
   return (
-    <Dialog title={`${p.name}: cards in play`} onClose={onClose} wide>
-      <div className="pick-grid">
-        {p.corp && <Card id={p.corp} resources={p.cardRes[p.corp]} />}
-        {cards.map((id) => <Card key={id} id={id} s={s} pid={pid} resources={p.cardRes[id]} compact={CARDS[id].type === 'event'} />)}
-      </div>
-      <label className="check"><input type="checkbox" checked={showEvents} onChange={(e) => setShowEvents(e.target.checked)} /> Show played events ({p.played.filter((id) => CARDS[id].type === 'event').length})</label>
+    <Dialog title={`${pid === viewer ? 'Your' : `${p.name}’s`} cards in play`} onClose={onClose} wide>
+      <Tableau s={s} pid={pid} view={view} setView={setView} title={p.corp ? CARDS[p.corp].name : 'Cards'} />
     </Dialog>
   );
 }

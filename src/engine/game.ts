@@ -5,12 +5,13 @@
 // A generation runs: research → actions → production → (Venus) World Government Terraforming →
 // (Colonies) colony tracks advance → (Turmoil) the Turmoil phase → next generation. The steps
 // after production may need decisions, so each runs as a queue with a `then` continuation.
-import type { Action, CardRes, ColonyState, Expansions, GameState, GenStep, Op, PartyId, Payment, PayLimits, Player, PlayerSeat, QueueItem, Res, StdProject } from './types';
+import type { Action, CardRes, ColonyState, Expansions, GameState, GenStep, LogEntry, Op, PartyId, Payment, PayLimits, Player, PlayerSeat, QueueItem, Res, StdProject } from './types';
 import { EXPANSIONS, NEUTRAL, PARTIES, RESOURCES } from './types';
 import { CARDS, CORP_IDS, PRELUDE_IDS, PROJECT_IDS, cardInGame, protects, roboticTargets, type CardDef } from './cards';
 import { createBoard, neighbours, maxOceans, maxOxy, maxTemp, onMars, params, MAX_VENUS, type BoardId, type TrackBonus } from './board';
 import { boardMA, milestoneDef, awardDef, setupRandom, gameAwards } from './ma';
 import { nextRandom, shuffle } from './rng';
+import { recordStep } from './logfx';
 import { P, inPlay, resCards, space } from './helpers';
 import {
   activeCards, autoPay, availableSpaces, awardCost, buyCost, canClaimMilestone, canFundAward, canPlayCard, canSP,
@@ -96,8 +97,9 @@ export function createGame(players: PlayerSeat[], opts: NewGameOptions = {}): Ga
   return s;
 }
 
-function log(s: GameState, pid: number | null, text: string) {
-  s.log.push({ gen: s.generation, pid, text });
+function log(s: GameState, pid: number | null, text: string, kind?: LogEntry['kind']) {
+  const last = s.log[s.log.length - 1];
+  s.log.push({ gen: s.generation, pid, text, n: (last?.n ?? s.log.length - 1) + 1, ...(kind ? { kind } : {}) });
   if (s.log.length > 400) s.log.splice(0, s.log.length - 400);
 }
 
@@ -133,7 +135,13 @@ export { order as turnOrder };
 
 export function applyAction(state: GameState, a: Action): GameState {
   const s = structuredClone(state);
-  applyActionMut(s, a);
+  applyActionLogged(s, a);
+  return s;
+}
+
+/** Applies an action in place and records what it changed on the log (for players' screens). */
+export function applyActionLogged(s: GameState, a: Action): GameState {
+  recordStep(s, s.prompt ? s.prompt.pid : s.active, () => applyActionMut(s, a));
   return s;
 }
 
@@ -396,7 +404,7 @@ function endGeneration(s: GameState) {
     for (const r of ['steel', 'titanium', 'plants', 'energy', 'heat'] as Res[]) p.res[r] += p.prod[r];
     for (const c of activeCards(s, p.id)) if (c.onProduction) for (const op of c.onProduction(s, p.id)) resolveDirect(s, p.id, op, c.id);
   }
-  log(s, null, `Production for generation ${s.generation}.`);
+  log(s, null, `Production for generation ${s.generation}.`, 'production');
   record(s, null);
   if (parametersMaxed(s)) {
     s.phase = 'finalGreenery';

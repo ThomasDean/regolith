@@ -7,7 +7,7 @@
 // It is pure TypeScript with the storage behind an interface, so the same code runs in the
 // Supabase Edge Function (server/edge.ts) and in the tests with an in-memory store.
 import type { Action, GameState, Level } from '../engine/types';
-import { applyActionMut, cleanExpansions, createGame, forfeitMut } from '../engine/game';
+import { applyActionLogged, applyActionMut, cleanExpansions, createGame, forfeitMut } from '../engine/game';
 import { cpuAction } from '../engine/ai/cpu';
 import { decider } from '../engine/moves';
 import { HIDDEN, type PlayReply, type PlayRequest, type RoomRow, type SeatRow } from './protocol';
@@ -100,7 +100,7 @@ function flush(s: GameState, pending: Record<string, Action>, log: SavePatch['ac
     delete pending[seat];
     const before = structuredClone(s);
     try {
-      applyActionMut(s, a);
+      applyActionLogged(s, a);
       log.push({ seat, a });
     } catch {
       // the pick was checked when it came in, so this shouldn't happen; drop it and let them choose again
@@ -232,7 +232,7 @@ async function step(req: PlayRequest, uid: string, store: Store, l: Loaded, now:
         try { applyActionMut(trial, a); } catch (e) { throw new HttpError(422, (e as Error).message); }
         pending[seat] = a;
       } else {
-        try { applyActionMut(s, a); } catch (e) { throw new HttpError(422, (e as Error).message); }
+        try { applyActionLogged(s, a); } catch (e) { throw new HttpError(422, (e as Error).message); }
         log.push({ seat, a });
       }
       flush(s, pending, log);
@@ -251,7 +251,7 @@ async function step(req: PlayRequest, uid: string, store: Store, l: Loaded, now:
       const t0 = now();
       for (let guard = 0; guard < 60; guard++) {
         const a = cpuAction(s, s.players[d].cpu!);
-        applyActionMut(s, a);
+        applyActionLogged(s, a);
         log.push({ seat: d, a });
         flush(s, pending, log);
         if (s.phase === 'over') break;
