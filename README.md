@@ -82,7 +82,7 @@ The menu's **Host online** button opens a game from the player list: the first s
 - **CPU seats** are played on the server one decision at a time. The host's screen asks for each step at its CPU speed, so CPU moves show up paced and animated as in hotseat play; if the host is away, anyone else's screen takes over after a few seconds.
 - **Dropping out.** In a game, the host's **Seats** button hands any seat to an Easy, Normal or Hard CPU, and back to its player later. Any player can **Forfeit** for good (the `forfeit` request): a Normal CPU takes the seat, it ranks last, and the game ends if one player or no human is left. Forfeiting needs the referee redeployed (the workflow does it on push to `main` when the token is set); no database change.
 - **Async friendly.** Games live on the server, so players can close the tab and come back; **Play online** lists your games and marks the ones waiting on you. Realtime pushes each change, with a slow poll as a fallback.
-- Undo isn't available online.
+- Your turn is a draft until you confirm it, online too: undo any step before confirming, except steps that reveal cards (draws, the end-of-generation deal), which ask first and lock in the turn so far.
 
 ### Setting it up (once)
 
@@ -212,7 +212,7 @@ All artwork is original and drawn in code; none of the publisher's art is used. 
 
 During play: a played card swells to the middle of the screen and flies to its owner's panel, tiles drop onto the map (oceans flood in, greeneries sprout, cities rise), numbers count up with a floating +/−, the planet flashes when a global parameter moves, and banners mark each generation and your turn. Milestones and awards get a trophy toast and the winner gets confetti. CPUs pause briefly after a showcase so you can read the card. Turn effects off with the **Effects** switch in the top bar; they also start off when your system asks for reduced motion.
 
-Hotseat games autosave to the browser's local storage and resume from the menu. Undo steps back through your own moves until a card is drawn or revealed.
+Hotseat games autosave to the browser's local storage and resume from the menu. Your turn is a draft: every step can be undone until you confirm the turn, except steps that reveal cards, which ask before they happen.
 
 ## CPU players
 

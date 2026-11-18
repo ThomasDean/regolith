@@ -19,13 +19,13 @@ for (const name of ['Prelude', 'Venus Next', 'Colonies', 'Turmoil']) await d.loc
 await d.locator('.exp-pick').scrollIntoViewIfNeeded();
 await d.screenshot({ path: `${out}/x1-menu.png` });
 await d.getByRole('button', { name: 'Start game' }).click();
-await d.waitForSelector(':is(.dialog, .sheet)');
+await d.waitForSelector('.start-view');
 await d.screenshot({ path: `${out}/x2-setup.png`, fullPage: false });
-// two preludes, three cards
-const grids = d.locator(':is(.dialog, .sheet) .pick-grid:not(.corps)');
-await grids.nth(0).locator('.card').nth(0).click();
-await grids.nth(0).locator('.card').nth(1).click();
-for (let i = 0; i < 3; i++) await grids.nth(1).locator('.card').nth(i).click();
+// a corporation, two preludes, three cards
+await d.locator('.start-group[aria-label="Corporations"] .card').first().click();
+await d.locator('.start-group[aria-label="Preludes"] .card').nth(0).click();
+await d.locator('.start-group[aria-label="Preludes"] .card').nth(1).click();
+for (let i = 0; i < 3; i++) await d.locator('.start-group[aria-label="Starting cards"] .card').nth(i).click();
 await d.getByRole('button', { name: /^Start with/ }).click();
 // prelude phase: wait for our dialog
 await d.waitForSelector(':is(.dialog, .sheet) >> text=play your preludes', { timeout: 20000 });
@@ -52,7 +52,7 @@ let clicks = 0;
 for (let i = 0; i < Number(process.argv[4] ?? 600); i++) {
   await d.waitForTimeout(15);
   if (await d.locator('.scores').count()) break;
-  const targets = d.locator(':is(.dialog, .sheet) button:not([disabled]), :is(.dialog, .sheet) .card, .hex.pickable, .offworld-space.pickable, .actionbar button:not([disabled]), .final-bar button:not([disabled]), .xpanel button:not([disabled])');
+  const targets = d.locator(':is(.dialog, .sheet) button:not([disabled]), :is(.dialog, .sheet) .card, .hex.pickable, .offworld-space.pickable, .actionbar button:not([disabled]), .final-bar button:not([disabled]), .turn-bar button, .xpanel button:not([disabled])');
   const n = await targets.count();
   if (!n) { await d.waitForTimeout(150); continue; }
   const pick = targets.nth(Math.floor(Math.random() * n));

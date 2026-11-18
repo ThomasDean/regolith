@@ -24,6 +24,7 @@ import { MeBar, Players } from './Players';
 import { Sheet } from './Sheet';
 import { loadTableauView, Tableau, type TableauView } from './Tableau';
 import { MAPanel } from './MA';
+import { StartPicker } from './StartPicker';
 import { LogPanel } from './LogPanel';
 import { buildReplay, loadSeen, replayStart, saveSeen, type Replay } from './replay';
 import { fmtTemp, RES_LABEL, resLabel } from './format';
@@ -57,12 +58,20 @@ export interface OnlineLink {
 }
 
 interface Entry { s: GameState; actor: number | null }
+interface Draft { base: GameState; version?: number; steps: { a: Action; s: GameState }[]; committing?: boolean }
 
 const deciderOf = (s: GameState) => (s.prompt ? s.prompt.pid : s.active);
 
 export function Game({ initial, onExit, online, saveId }: { initial: GameState; onExit: () => void; online?: OnlineLink; saveId?: string }) {
   const [hist, setHist] = useState<Entry[]>([{ s: online?.view ?? initial, actor: null }]);
-  const s = hist[hist.length - 1].s;
+  /** the game as the server (or this device's save) has it */
+  const live = hist[hist.length - 1].s;
+  // your turn is played as a draft first: every step can be undone until you confirm the turn,
+  // except steps that reveal cards (draws), which are confirmed on their own and lock it in
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [risky, setRisky] = useState<Action | null>(null);
+  /** what the table shows and the controls act on: your draft, or the game */
+  const s = draft?.steps[draft.steps.length - 1]?.s ?? live;
   const humans = s.players.filter((p) => !p.cpu).map((p) => p.id);
   const [localViewer, setViewer] = useState<number | null>(humans.length === 1 ? humans[0] : null);
   const viewer = online ? (online.seat >= 0 ? online.seat : null) : localViewer;
@@ -103,7 +112,67 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
     setError(null);
     sendRef.current!(a).catch((e) => setError((e as Error).message)).finally(() => setSending(false));
   }, []);
-  const act = online ? onlineAct : localAct;
+  const rawAct = online ? onlineAct : localAct;
+
+  // ---- drafting your turn ----
+  const draftable = (cur: GameState) => viewer !== null && !replay && (cur.phase === 'action' || cur.phase === 'finalGreenery')
+    && deciderOf(cur) === viewer && cur.active === viewer && !cur.players[viewer].cpu;
+  const pushDraft = (a: Action, next: GameState) => {
+    lastOp.current = 'act';
+    setError(null);
+    setDraft((d) => ({ base: d?.base ?? live, version: d ? d.version : online?.version, steps: [...(d?.steps ?? []), { a, s: next }] }));
+  };
+  /** Sends the draft (plus one more action) to the game for good. */
+  const commit = async (extra?: Action) => {
+    const steps = draft?.steps ?? [];
+    const actions = [...steps.map((x) => x.a), ...(extra ? [extra] : [])];
+    if (!actions.length) { setDraft(null); return; }
+    if (!online) {
+      const top = steps[steps.length - 1]?.s ?? live;
+      let fin: GameState | null = null;
+      if (extra) {
+        try { fin = applyAction(top, extra); } catch (e) { setError((e as Error).message); return; }
+      }
+      const actor = deciderOf(draft?.base ?? live);
+      if (fin) lastOp.current = 'act';
+      setHist((h) => [...h, ...steps.map((x) => ({ s: x.s, actor })), ...(fin ? [{ s: fin, actor }] : [])].slice(-80));
+      setDraft(null);
+      return;
+    }
+    setDraft((d) => (d ? { ...d, committing: true } : { base: live, steps: [], committing: true }));
+    setSending(true);
+    setError(null);
+    try {
+      for (const a of actions) await sendRef.current!(a);
+    } catch (e) {
+      setError(`${(e as Error).message} Your turn was reloaded from the server.`);
+    } finally {
+      setSending(false);
+      setDraft(null);
+    }
+  };
+  const act = (a: Action) => {
+    if (!draftable(s)) { rawAct(a); return; }
+    let next: GameState | null = null;
+    try { next = applyAction(s, a); } catch (e) {
+      // online the deck is hidden from you, so a step that draws can't be tried here
+      if (!online) { setError((e as Error).message); return; }
+    }
+    if (!next || next.reveal !== s.reveal) { setRisky(a); return; }
+    pushDraft(a, next);
+  };
+  const undoStep = () => {
+    lastOp.current = 'undo';
+    setDraft((d) => (d && d.steps.length > 1 ? { ...d, steps: d.steps.slice(0, -1) } : null));
+  };
+  // the game moved on without you (a seat change, a forfeit): drop a draft built on the old one
+  const liveVersion = online?.version;
+  useEffect(() => {
+    if (!draft || draft.committing) return;
+    if (online ? draft.version !== liveVersion : draft.base !== live) setDraft(null);
+  }, [live, liveVersion, draft, online]);
+  const drafting = !!draft && draft.steps.length > 0 && !draft.committing;
+  const turnReady = drafting && (deciderOf(s) !== viewer || s.phase !== draft!.base.phase || s.generation !== draft!.base.generation);
 
   // online: each newer server view becomes the next step, so effects play as they do locally
   const onlineView = online?.view;
@@ -117,7 +186,7 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
     });
   }, [onlineView]);
 
-  useEffect(() => { if (!online && saveId) regolithSaves.save(saveId, s); }, [s, online, saveId]);
+  useEffect(() => { if (!online && saveId) regolithSaves.save(saveId, live); }, [live, online, saveId]);
 
   // cloud sync: a couple of seconds after the last change (right away when the game ends)
   const session = useSession();
@@ -127,10 +196,10 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
     if (!cloudEnabled || !session || online) return;
     const t = setTimeout(() => {
       setCloud('saving');
-      putSave(cloudId, s).then(() => setCloud('saved'), () => setCloud('error'));
-    }, s.phase === 'over' ? 0 : 2500);
+      putSave(cloudId, live).then(() => setCloud('saved'), () => setCloud('error'));
+    }, live.phase === 'over' ? 0 : 2500);
     return () => clearTimeout(t);
-  }, [s, session, cloudId, online]);
+  }, [live, session, cloudId, online]);
 
   // ---- effects: turn each state change into showcases, tile drops, toasts and banners ----
   const [fxOn, setFxOn] = useState(loadFxSetting);
@@ -210,28 +279,27 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
   const onlineVersion = online?.version;
   const onlineHost = online?.host;
   const replaying = !!replay;
+  const liveDp = live.players[deciderOf(live)];
+  const holding = replaying || !!draft;
   useEffect(() => {
-    if (over || !dp.cpu || replaying) return;
+    const s = live, dp = liveDp, over = live.phase === 'over';
+    if (over || !dp.cpu || holding) return;
     const base = s.prompt ? Math.min(250, cpuSpeed) : cpuSpeed;
     if (onlineVersion !== undefined) {
       const v = onlineVersion;
       const t = setTimeout(() => advanceRef.current!(v), base + holdRef.current + (onlineHost ? 0 : 6000));
       return () => clearTimeout(t);
     }
-    const t = setTimeout(() => act(cpuAction(s, dp.cpu!)), base + holdRef.current);
+    const t = setTimeout(() => rawAct(cpuAction(s, dp.cpu!)), base + holdRef.current);
     return () => clearTimeout(t);
-  }, [s, over, dp.cpu, act, cpuSpeed, onlineVersion, onlineHost, replaying]);
+  }, [live, liveDp, rawAct, cpuSpeed, onlineVersion, onlineHost, holding]);
 
   // with several humans, hide hands between them
-  const needsHandoff = !online && !over && !dp.cpu && viewer !== decider && !replay;
+  const needsHandoff = !online && !over && !dp.cpu && viewer !== decider && !replay && !draft;
   useEffect(() => {
     if (needsHandoff && humans.length === 1) setViewer(decider);
   }, [needsHandoff, humans.length, decider]);
 
-  const last = hist[hist.length - 1];
-  const prev = hist[hist.length - 2];
-  const canUndo = !online && !!prev && last.actor !== null && last.actor === viewer && !s.players[last.actor].cpu && prev.s.reveal === s.reveal && !over;
-  const undo = () => { lastOp.current = 'undo'; setHist((h) => h.slice(0, -1)); };
 
   // online, corporation and research picks are made at the same time, not in turn order
   const meP = viewer !== null ? s.players[viewer] : null;
@@ -241,6 +309,7 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
   const canAct = myTurn && !sending;
   const pr = canAct ? s.prompt : null;
   const [seatsOpen, setSeatsOpen] = useState(false);
+  const choosingStart = picking && !sending && s.phase === 'setup';
   const spacePrompt = pr?.kind === 'space' ? pr : null;
   const me = viewer !== null ? s.players[viewer] : null;
 
@@ -322,7 +391,7 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
       <header className="topbar">
         <div className="brand">Regolith</div>
         <div className="gen">Generation <b>{s.generation}</b></div>
-        <Status s={s} viewer={viewer} online={online} />
+        <Status s={s} viewer={viewer} online={online} awaiting={turnReady} />
         <div className="topbar-tools">
           {session && cloud !== 'idle' && (
             <span className={`cloud-status ${cloud}`} role="status">
@@ -339,15 +408,14 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
               <option value={120}>Fast</option>
             </select>
           </label>
-          {online ? (
+          {online && (
             <>
               <span className="room-code" title="Friends join with this code">Game <b>{online.code}</b></span>
               {online.host && !over && <button type="button" className="btn ghost" onClick={() => setSeatsOpen(true)}>Seats</button>}
             </>
-          ) : (
-            <button type="button" className="btn ghost" onClick={undo} disabled={!canUndo} title="Undo your last step (not after cards are drawn)">Undo</button>
           )}
-          <button type="button" className="btn ghost" onClick={replay ? stopReplay : startReplay} disabled={!replay && !s.log.length}
+          <button type="button" className="btn ghost" onClick={undoStep} disabled={!drafting} title="Undo your last step this turn (not after cards are drawn)">Undo</button>
+          <button type="button" className="btn ghost" onClick={replay ? stopReplay : startReplay} disabled={!replay && (!s.log.length || !!draft)}
             title="Watch the latest moves again on the board">{replay ? 'Stop replay' : 'Replay'}</button>
           {hasExpansions && <button type="button" className="btn ghost" onClick={() => setHelp(true)} title="How to play this game's expansions">How to play</button>}
           {forfeitable.length > 0 && <button type="button" className="btn ghost" onClick={() => setForfeiting(true)}>Forfeit</button>}
@@ -360,6 +428,7 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
 
       {error && <div className="error" role="alert">{error}<button type="button" className="icon-btn" onClick={() => setError(null)} aria-label="Dismiss">×</button></div>}
 
+      {choosingStart ? <StartPicker s={s} pid={online ? viewer! : decider} act={act} onHelp={hasExpansions ? () => setHelp(true) : undefined} /> : (
       <main className="table">
         <div className="map-col">
           <Gauges s={view} />
@@ -399,6 +468,7 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
           )}
         </section>
       </main>
+      )}
 
       {needsHandoff && humans.length > 1 && (
         <Dialog title={`Pass the device to ${dp.name}`}>
@@ -406,7 +476,6 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
           <button type="button" className="btn big" onClick={() => setViewer(decider)}>I'm {dp.name}, show my hand</button>
         </Dialog>
       )}
-      {picking && !sending && s.phase === 'setup' && <SetupDialog s={s} pid={online ? viewer! : decider} act={act} onHelp={hasExpansions ? () => setHelp(true) : undefined} />}
       {picking && !sending && s.phase === 'research' && !s.prompt && <ResearchDialog s={s} pid={online ? viewer! : decider} act={act} onHelp={hasExpansions ? () => setHelp(true) : undefined} />}
       {canAct && s.phase === 'prelude' && !s.prompt && !s.pendingAction && <PreludeDialog s={s} pid={decider} act={act} />}
       {seatsOpen && online && <SeatsDialog s={s} online={online} onClose={() => setSeatsOpen(false)} />}
@@ -424,6 +493,28 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
       {show && <CardShowcase key={show.key} show={show} s={view} onDone={endShow} fast={cpuSpeed <= 120} />}
       {banner && <BannerView key={banner.key} b={banner} onDone={endBanner} />}
       <Toasts items={toasts} s={view} />
+      {drafting && (
+        <div className={`turn-bar ${turnReady ? 'ready' : ''}`} role="status" aria-live="polite">
+          <span className="turn-text">
+            {turnReady
+              ? <><b>End your turn?</b> Nothing is sent until you confirm.</>
+              : <>{draft!.steps.length} step{draft!.steps.length === 1 ? '' : 's'} this turn, not confirmed yet.</>}
+          </span>
+          <span className="turn-tools">
+            <button type="button" className="btn ghost" onClick={undoStep}>Undo</button>
+            <button type="button" className={`btn ${turnReady ? '' : 'ghost'}`} onClick={() => commit()}>{turnReady ? 'Confirm turn' : 'Confirm so far'}</button>
+          </span>
+        </div>
+      )}
+      {risky && (
+        <Dialog title="This can’t be undone" onClose={() => setRisky(null)}
+          footer={<>
+            <button type="button" className="btn ghost" onClick={() => setRisky(null)}>Cancel</button>
+            <button type="button" className="btn" onClick={() => { const a = risky; setRisky(null); commit(a); }}>Go ahead</button>
+          </>}>
+          <p>This step reveals new cards, so it can’t be taken back.{drafting ? ' The rest of your turn so far is confirmed with it.' : ''}</p>
+        </Dialog>
+      )}
       {replay && (
         <div className="replay-bar" role="status" aria-live="polite">
           <span className="replay-count">Replay {replay.i}/{replay.r.frames.length - 1}</span>
@@ -444,7 +535,10 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
 }
 
 // ---------------- status line ----------------
-function Status({ s, viewer, online }: { s: GameState; viewer: number | null; online?: OnlineLink }) {
+function Status({ s, viewer, online, awaiting }: { s: GameState; viewer: number | null; online?: OnlineLink; awaiting?: boolean }) {
+  if (awaiting && viewer !== null) {
+    return <div className="status" role="status" aria-live="polite" style={{ ['--pc' as string]: s.players[viewer].color }}><span className="swatch" />Confirm your turn</div>;
+  }
   const d = s.players[deciderOf(s)];
   let text: string;
   const names = (ids: number[]) => ids.map((i) => (i === viewer ? 'you' : s.players[i].name)).join(', ');
@@ -614,14 +708,7 @@ function ActionBar({ s, pid, myTurn, act, panel, setPanel }: { s: GameState; pid
       )}
       <div className="ab-turn">
         {s.actionsThisTurn >= 1 && <button type="button" className="btn ghost" disabled={!myTurn} onClick={() => act({ t: 'endTurn' })}>End turn</button>}
-        {panel === 'confirmPass' ? (
-          <span className="confirm">Pass for the rest of this generation?
-            <button type="button" className="btn danger" onClick={() => { setPanel(null); act({ t: 'pass' }); }}>Pass</button>
-            <button type="button" className="btn ghost" onClick={() => setPanel(null)}>Keep playing</button>
-          </span>
-        ) : (
-          <button type="button" className="btn" disabled={!myTurn} onClick={() => setPanel('confirmPass')}>Pass</button>
-        )}
+        <button type="button" className="btn" disabled={!myTurn} onClick={() => act({ t: 'pass' })} title="Pass for the rest of this generation (you can undo it before confirming)">Pass</button>
       </div>
     </section>
   );
@@ -642,44 +729,6 @@ function SellDialog({ s, pid, onClose, act }: { s: GameState; pid: number; onClo
 }
 
 // ---------------- setup & research ----------------
-function SetupDialog({ s, pid, act, onHelp }: { s: GameState; pid: number; act: (a: Action) => void; onHelp?: () => void }) {
-  const p = s.players[pid];
-  const su = p.setup!;
-  const [corp, setCorp] = useState(su.corps[0]);
-  const [keep, setKeep] = useState<string[]>([]);
-  const [pre, setPre] = useState<string[]>([]);
-  const beginner = corp === 'beginner-corporation';
-  const start = CARDS[corp].startMC!;
-  const price = corp === 'polyphemos' ? 5 : corp === 'terralabs-research' ? 1 : 3;
-  const cost = beginner ? 0 : keep.length * price;
-  const toggle = (id: string) => setKeep((x) => (x.includes(id) ? x.filter((y) => y !== id) : [...x, id]));
-  const togglePre = (id: string) => setPre((x) => (x.includes(id) ? x.filter((y) => y !== id) : x.length >= 2 ? [x[1], id] : [...x, id]));
-  const needPre = !!su.preludes && pre.length !== 2;
-  return (
-    <Sheet title={`${p.name}: found your corporation`}
-      summary={<span className={cost > start || needPre ? 'warn' : 'muted'}>{needPre ? `Choose 2 preludes (${pre.length} chosen). ` : ''}{beginner ? 'All 10 cards are free with the beginner corporation.' : `${keep.length} cards cost ${cost} M€, leaving ${start - cost} M€.`}</span>}
-      actions={<button type="button" className="btn" disabled={cost > start || needPre} onClick={() => act({ t: 'setup', corp, keep: beginner ? [] : keep, ...(su.preludes ? { preludes: pre } : {}) })}>Start with {CARDS[corp].name}</button>}>
-      <h3>Corporation</h3>
-      <div className="pick-grid corps">
-        {su.corps.map((c, i) => <Card key={c} id={c} index={i} selected={corp === c} onClick={() => setCorp(c)} />)}
-      </div>
-      {su.preludes && (
-        <>
-          <h3>Preludes <span className="muted">keep 2; both are played before the first generation</span></h3>
-          <div className="pick-grid">
-            {su.preludes.map((c, i) => <Card key={c} id={c} index={i + 2} selected={pre.includes(c)} onClick={() => togglePre(c)} />)}
-          </div>
-        </>
-      )}
-      <h3>Starting cards {beginner ? '' : <span className="muted">{price} M€ each</span>}</h3>
-      <div className="pick-grid">
-        {su.cards.map((id, i) => <Card key={id} id={id} index={i + 2} selected={beginner || keep.includes(id)} onClick={beginner ? undefined : () => toggle(id)} />)}
-      </div>
-      {onHelp && <HelpLink onHelp={onHelp} />}
-    </Sheet>
-  );
-}
-
 function ResearchDialog({ s, pid, act, onHelp }: { s: GameState; pid: number; act: (a: Action) => void; onHelp?: () => void }) {
   const p = s.players[pid];
   const [keep, setKeep] = useState<string[]>([]);

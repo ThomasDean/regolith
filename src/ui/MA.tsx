@@ -9,12 +9,12 @@ type Pick = { kind: 'milestone' | 'award'; id: string };
  * Milestones and awards as a compact row of names. Tapping one opens its card: what it
  * measures, who has claimed or funded it, and a table of where every player stands.
  */
-export function MAPanel({ s, viewer, canAct, act }: { s: GameState; viewer: number | null; canAct: boolean; act: (a: Action) => void }) {
+export function MAPanel({ s, viewer, canAct, act, detailed }: { s: GameState; viewer: number | null; canAct: boolean; act: (a: Action) => void; detailed?: boolean }) {
   const [pick, setPick] = useState<Pick | null>(null);
   const ms = gameMilestones(s);
   const aws = gameAwards(s);
   const mine = (kind: Pick['kind'], id: string) => viewer !== null && canAct && (kind === 'milestone' ? canClaimMilestone(s, viewer, id) : canFundAward(s, viewer, id));
-  const chip = (kind: Pick['kind'], id: string, name: string) => {
+  const chip = (kind: Pick['kind'], id: string, name: string, text: string) => {
     const owner = (kind === 'milestone' ? s.milestones : s.awards).find((x) => x.id === id);
     // only milestones glow when claimable: any award you can afford is fundable, so glowing them says little
     const ready = !owner && kind === 'milestone' && mine(kind, id);
@@ -23,20 +23,20 @@ export function MAPanel({ s, viewer, canAct, act }: { s: GameState; viewer: numb
         style={owner ? { ['--pc' as string]: s.players[owner.pid].color } : undefined}
         aria-label={`${name}${owner ? `, ${kind === 'milestone' ? 'claimed' : 'funded'} by ${s.players[owner.pid].name}` : ready ? `, you can ${kind === 'milestone' ? 'claim' : 'fund'} it` : ''}. Details`}>
         {owner && <span className="swatch" aria-hidden="true" />}
-        <span>{name}</span>
+        <span>{name}{detailed && <small className="ma-text">{text}</small>}</span>
         <svg className="ma-info" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M8 7v4.5M8 4.6v.1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
       </button>
     );
   };
   return (
-    <section className="ma-panel" aria-label="Milestones and awards">
+    <section className={`ma-panel ${detailed ? 'detailed' : ''}`} aria-label="Milestones and awards">
       <div className="ma-row">
         <h3>Milestones <span className="muted">{MILESTONE_COST} M€ · {3 - s.milestones.length} left</span></h3>
-        <div className="ma-chips">{ms.map((m) => chip('milestone', m.id, m.name))}</div>
+        <div className="ma-chips">{ms.map((m) => chip('milestone', m.id, m.name, m.text))}</div>
       </div>
       <div className="ma-row">
         <h3>Awards <span className="muted">{s.awards.length < 3 ? `${awardCost(s)} M€ · ${3 - s.awards.length} left` : 'all funded'}</span></h3>
-        <div className="ma-chips">{aws.map((a) => chip('award', a.id, a.name))}</div>
+        <div className="ma-chips">{aws.map((a) => chip('award', a.id, a.name, a.text))}</div>
       </div>
       {pick && <MADialog s={s} pick={pick} viewer={viewer} canAct={canAct} onClose={() => setPick(null)} act={(a) => { setPick(null); act(a); }} />}
     </section>

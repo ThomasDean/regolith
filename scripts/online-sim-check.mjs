@@ -17,19 +17,21 @@ const seat = (u) => p.locator(`[data-seat=${u}]`);
 const viewAs = async (name) => { await p.locator('.sim-bar').getByRole('button', { name }).click(); await p.waitForTimeout(150); };
 
 // both players get their corporation choice at once, whoever's turn it is
-await seat('u0').locator(':is(.dialog, .sheet)').first().waitFor();
+await seat('u0').locator('.start-view').first().waitFor();
 await p.screenshot({ path: `${out}/sim-01-tom-setup.png` });
 await viewAs('Ana');
-await seat('u1').locator(':is(.dialog, .sheet)').first().waitFor();
-const anaCards = await seat('u1').locator(':is(.dialog, .sheet) .pick-grid:not(.corps) .card').count();
+await seat('u1').locator('.start-view').first().waitFor();
+const anaCards = await seat('u1').locator('.start-group[aria-label="Starting cards"] .card').count();
 console.log('Ana sees her own 10 starting cards:', anaCards);
-await seat('u1').locator(':is(.dialog, .sheet) .pick-grid:not(.corps) .card').first().click();
+await seat('u1').locator('.start-group[aria-label="Corporations"] .card').first().click();
+await seat('u1').locator('.start-group[aria-label="Starting cards"] .card').first().click();
 await seat('u1').getByRole('button', { name: /^Start with/ }).click();
 await p.waitForTimeout(400);
 await p.screenshot({ path: `${out}/sim-02-ana-waiting.png` });
 console.log('Ana status after picking:', await seat('u1').locator('.status').textContent());
 await viewAs('Tom');
-for (let i = 0; i < 2; i++) await seat('u0').locator(':is(.dialog, .sheet) .pick-grid:not(.corps) .card').nth(i).click();
+await seat('u0').locator('.start-group[aria-label="Corporations"] .card').first().click();
+for (let i = 0; i < 2; i++) await seat('u0').locator('.start-group[aria-label="Starting cards"] .card').nth(i).click();
 await seat('u0').getByRole('button', { name: /^Start with/ }).click();
 await p.waitForTimeout(3500);
 await p.screenshot({ path: `${out}/sim-03-table.png` });
@@ -38,7 +40,7 @@ console.log('Tom hand:', await seat('u0').locator('.hand-cards .card').count(), 
 
 // click through play: act for whichever seat has something to do
 let clicks = 0;
-const targets = (u) => seat(u).locator(':is(.dialog, .sheet) button:not([disabled]), :is(.dialog, .sheet) .card, .hex.pickable, .offworld-space.pickable, .actionbar button:not([disabled]), .final-bar button:not([disabled])');
+const targets = (u) => seat(u).locator(':is(.dialog, .sheet) button:not([disabled]), :is(.dialog, .sheet) .card, .hex.pickable, .offworld-space.pickable, .actionbar button:not([disabled]), .final-bar button:not([disabled]), .turn-bar button');
 for (let i = 0; i < Number(process.argv[4] ?? 400); i++) {
   await p.waitForTimeout(20);
   if (await seat('u0').locator('.scores').count()) break;
