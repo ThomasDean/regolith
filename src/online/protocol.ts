@@ -1,5 +1,6 @@
 // Shapes shared by the online client and the referee (the server that runs the engine).
-import type { Action, Expansions, GameState, Level } from '../engine/types';
+import type { Action, Expansions, GameState, Level, Premove } from '../engine/types';
+import type { CustomCard } from '../engine/custom';
 
 export type SeatKind = 'human' | 'open' | Level;
 
@@ -13,7 +14,7 @@ export interface SeatRow {
 }
 
 /** Map, milestone/award and expansion choice for an online game (absent: Tharsis with its own set, no expansions). */
-export interface RoomSettings { board?: string; milestones?: string[]; awards?: string[]; expansions?: Expansions }
+export interface RoomSettings { board?: string; milestones?: string[]; awards?: string[]; expansions?: Expansions; custom?: CustomCard[] }
 
 /** The public row every member of a room can read (and gets realtime updates for). */
 export interface RoomRow {
@@ -40,6 +41,8 @@ export type PlayRequest =
   | { op: 'act'; room: string; action: Action }
   | { op: 'advance'; room: string; version: number }
   | { op: 'seat'; room: string; seat: number; kind: 'human' | Level }
+  /** queue moves for your next turn (an empty list clears them) */
+  | { op: 'premove'; room: string; list: Premove[] }
   /** give up your seat: a CPU plays it out and it ranks last */
   | { op: 'forfeit'; room: string };
 

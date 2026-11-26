@@ -2,7 +2,7 @@
 // the browser with an in-memory store, so the online screens can be tried without Supabase.
 // Two human seats share this tab; switch between them with the bar at the top.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Action, GameState, Level } from '../engine/types';
+import type { Action, GameState, Level, Premove } from '../engine/types';
 import { handle, type Loaded, type SavePatch, type Store } from '../online/referee';
 import type { PlayReply, PlayRequest, RoomRow } from '../online/protocol';
 import { Game, type OnlineLink } from './Game';
@@ -60,6 +60,7 @@ function Seat({ store, uid, visible }: { store: MemStore; uid: string; visible: 
     advance: (version: number) => { call({ op: 'advance', room: ROOM, version }).catch((e) => setErr(String(e))); },
     setSeat: (seat: number, kind: 'human' | Level) => call({ op: 'seat', room: ROOM, seat, kind }),
     forfeit: () => call({ op: 'forfeit', room: ROOM }),
+    premove: (list: Premove[]) => call({ op: 'premove', room: ROOM, list }),
   } : null, [reply, uid, call]);
   return (
     <div style={{ display: visible ? 'block' : 'none' }} data-seat={uid}>

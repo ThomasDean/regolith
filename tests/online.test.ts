@@ -4,6 +4,7 @@ import { HIDDEN, type PlayReply, type RoomRow, type SeatRow } from '../src/onlin
 import { randomAction } from '../src/engine/bot';
 import { createGame } from '../src/engine/game';
 import type { Action, GameState } from '../src/engine/types';
+import { finishCustom } from '../src/engine/custom';
 
 function rng(seed: number) { let t = seed; return () => { t = (t + 0x6d2b79f5) | 0; let x = Math.imul(t ^ (t >>> 15), t | 1); x ^= x + Math.imul(x ^ (x >>> 7), x | 61); return ((x ^ (x >>> 14)) >>> 0) / 4294967296; }; }
 
@@ -179,6 +180,49 @@ describe('online referee', () => {
     const over = store.rooms.get(ID)!;
     expect(over.room.status).toBe('over');
     expect(over.state!.endedBy).toBe('forfeit');
+  });
+
+  it('makes a queued pass for a player as soon as their turn comes, without them', async () => {
+    const store = new MemStore();
+    makeRoom(store, [human(0), human(1)]);
+    await handle({ op: 'start', room: ID }, 'u0', store);
+    const rnd = rng(5);
+    // both players play randomly until it's the action phase and player 0 is up
+    for (let i = 0; i < 400; i++) {
+      const st = store.rooms.get(ID)!.state!;
+      if (st.phase === 'action' && !st.prompt && st.active === 0) break;
+      const d = st.prompt ? st.prompt.pid : st.active;
+      const r = await handle({ op: 'view', room: ID }, `u${d}`, store);
+      await handle({ op: 'act', room: ID, action: randomAction(r.view!, rnd) }, `u${d}`, store).catch(() => {});
+    }
+    const st = store.rooms.get(ID)!.state!;
+    expect(st.phase).toBe('action');
+    // player 1 queues a pass while waiting; player 0 then ends their turn
+    const q = await handle({ op: 'premove', room: ID, list: [{ t: 'pass' }] }, 'u1', store);
+    expect(q.view!.premoves?.[1]?.list).toEqual([{ t: 'pass' }]);
+    await expect(handle({ op: 'premove', room: ID, list: [{ t: 'nope' }] as never }, 'u1', store)).rejects.toThrow(/premove/i);
+    const other = await handle({ op: 'view', room: ID }, 'u0', store);
+    expect(other.view!.premoves).toBeUndefined();
+    await handle({ op: 'act', room: ID, action: { t: 'pass' } }, 'u0', store);
+    const after = store.rooms.get(ID)!.state!;
+    expect(after.players[1].passed || after.generation > st.generation).toBe(true);
+    expect(after.log.some((l) => l.pid === 1 && /passed/.test(l.text))).toBe(true);
+  });
+
+  it('starts a game with the host’s custom cards, and refuses tampered ones', async () => {
+    const card = finishCustom({ name: 'Algae Vats', type: 'automated', cost: 9, tags: ['plant'], play: [{ k: 'prod', r: 'plants', n: 2 }] });
+    const store = new MemStore();
+    makeRoom(store, [human(0), cpu(1)]);
+    store.rooms.get(ID)!.room.settings = { custom: [card] };
+    await handle({ op: 'start', room: ID }, 'u0', store);
+    const st = store.rooms.get(ID)!.state!;
+    expect(st.options.custom?.map((c) => c.id)).toEqual([card.id]);
+    expect([...st.deck, ...st.players.flatMap((p) => p.setup?.cards ?? [])]).toContain(card.id);
+    // a card whose content was changed without changing its id is refused
+    const bad = new MemStore();
+    makeRoom(bad, [human(0), cpu(1)]);
+    bad.rooms.get(ID)!.room.settings = { custom: [{ ...card, cost: 0 }] };
+    await expect(handle({ op: 'start', room: ID }, 'u0', bad)).rejects.toThrow(/Custom cards/);
   });
 
   it('ignores a stale advance', async () => {

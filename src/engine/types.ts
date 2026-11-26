@@ -134,6 +134,9 @@ export type Prompt =
 export interface Payment { steel?: number; titanium?: number; heat?: number; floaters?: number; microbes?: number }
 export interface PayLimits { steel: boolean; titanium: boolean; heat: boolean; floaters?: boolean; microbes?: boolean }
 
+/** A move queued while waiting: pass, or use a card's action, when your turn comes. */
+export type Premove = { t: 'pass' } | { t: 'cardAction'; card: string };
+
 export type Action =
   | { t: 'setup'; corp: string; keep: string[]; preludes?: string[] }
   | { t: 'prelude'; card: string }
@@ -254,6 +257,8 @@ export interface GameOptions {
   milestones?: string[];
   awards?: string[];
   expansions?: Expansions;
+  /** players' own cards shuffled into the deck (see custom.ts) */
+  custom?: import('./custom').CustomCard[];
 }
 
 export interface ColonyState {
@@ -333,4 +338,6 @@ export interface GameState {
   turmoil?: TurmoilState;
   /** the game ended early because players forfeited */
   endedBy?: 'forfeit';
+  /** moves players queued for their next turn (see premoves.ts); each seat sees only its own online */
+  premoves?: Record<number, { gen: number; list: Premove[] }>;
 }

@@ -12,6 +12,7 @@ import { createBoard, neighbours, maxOceans, maxOxy, maxTemp, onMars, params, MA
 import { boardMA, milestoneDef, awardDef, setupRandom, gameAwards } from './ma';
 import { nextRandom, shuffle } from './rng';
 import { recordStep } from './logfx';
+import { cleanCustomList, ensureCustom, registerCustom } from './custom';
 import { P, inPlay, resCards, space } from './helpers';
 import {
   activeCards, autoPay, availableSpaces, awardCost, buyCost, canClaimMilestone, canFundAward, canPlayCard, canSP,
@@ -38,6 +39,8 @@ export interface NewGameOptions {
   awards?: string[];
   /** Prelude, Venus Next, Colonies, Turmoil */
   expansions?: Expansions;
+  /** players' own cards to shuffle into the deck */
+  custom?: unknown[];
 }
 
 /** Only the known expansions, as booleans. */
@@ -49,6 +52,8 @@ export function createGame(players: PlayerSeat[], opts: NewGameOptions = {}): Ga
   const corporateEra = opts.corporateEra ?? true;
   const board = opts.board ?? 'tharsis';
   const ex = cleanExpansions(opts.expansions);
+  const custom = cleanCustomList(opts.custom);
+  registerCustom(custom);
   let ma = { milestones: opts.milestones, awards: opts.awards };
   if (!ma.milestones || !ma.awards) {
     const d = boardMA(board, setupRandom(seed), ex);
@@ -57,7 +62,7 @@ export function createGame(players: PlayerSeat[], opts: NewGameOptions = {}): Ga
   if (ma.milestones!.some((id) => !milestoneDef(id)) || ma.awards!.some((id) => !awardDef(id))) fail('Unknown milestone or award');
   if (new Set(ma.milestones).size !== ma.milestones!.length || new Set(ma.awards).size !== ma.awards!.length) fail('Duplicate milestone or award');
   const s: GameState = {
-    options: { corporateEra, seed, board, milestones: ma.milestones, awards: ma.awards, expansions: ex }, rng: seed, phase: 'setup', generation: 1, firstPlayer: 0, active: 0, actionsThisTurn: 0,
+    options: { corporateEra, seed, board, milestones: ma.milestones, awards: ma.awards, expansions: ex, ...(custom.length ? { custom } : {}) }, rng: seed, phase: 'setup', generation: 1, firstPlayer: 0, active: 0, actionsThisTurn: 0,
     temperature: -30, oxygen: 0, oceans: 0, board: createBoard(board, { venus: ex.venus }),
     players: players.map((ps, i): Player => ({
       id: i, name: ps.name, color: ps.color, cpu: ps.cpu, corp: null, tr: 20, res: zero(), prod: zero(), hand: [], played: [],
@@ -68,7 +73,7 @@ export function createGame(players: PlayerSeat[], opts: NewGameOptions = {}): Ga
     history: [], raised: players.map(() => ({ temp: 0, oxy: 0, ocean: 0, venus: 0 })), turns: 0,
   };
   // the base game's random draws come first, so a base game deals the same from the same seed
-  s.deck = shuffle(s, PROJECT_IDS.filter((id) => cardInGame(s, id)));
+  s.deck = shuffle(s, [...PROJECT_IDS, ...custom.map((c) => c.id)].filter((id) => cardInGame(s, id)));
   const corps = shuffle(s, CORP_IDS.filter((id) => cardInGame(s, id)));
   s.firstPlayer = Math.floor(nextRandom(s) * players.length);
   if (ex.prelude) s.preludeDeck = shuffle(s, [...PRELUDE_IDS]);
@@ -147,6 +152,7 @@ export function applyActionLogged(s: GameState, a: Action): GameState {
 
 /** Applies an action in place (used by CPUs on their own copies). */
 export function applyActionMut(s: GameState, a: Action): GameState {
+  ensureCustom(s);
   const pid = s.active;
   const p = P(s, pid);
   if (a.t === 'answer') {

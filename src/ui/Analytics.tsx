@@ -1,10 +1,23 @@
 // End-of-game analytics: how the race unfolded (VP, TR or income turn by turn or per
 // generation), where each player's points came from, and a table of game stats.
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GameState, HistoryPoint } from '../engine/types';
 import { CARDS } from '../engine/cards';
 import { score } from '../engine/queries';
 import { cities, eventsPlayed, greeneries, marsTiles } from '../engine/helpers';
+
+/** Phone-width screens get charts drawn at phone proportions, so their text stays readable. */
+export function useNarrow(px = 640): boolean {
+  const q = typeof window !== 'undefined' ? window.matchMedia?.(`(max-width: ${px}px)`) : undefined;
+  const [narrow, setNarrow] = useState(!!q?.matches);
+  useEffect(() => {
+    if (!q) return;
+    const on = () => setNarrow(q.matches);
+    q.addEventListener('change', on);
+    return () => q.removeEventListener('change', on);
+  }, [q]);
+  return narrow;
+}
 
 type Metric = 'vp' | 'tr' | 'income';
 type Axis = 'turn' | 'gen';
@@ -47,7 +60,8 @@ function LineChart({ s, metric, axis }: { s: GameState; metric: Metric; axis: Ax
   const pts = useMemo(() => series(s.history ?? [], metric, axis), [s, metric, axis]);
   const [hover, setHover] = useState<number | null>(null);
   const wrap = useRef<HTMLDivElement>(null);
-  const W = 720, H = 290, L = 40, R = 104, T = 24, B = 40;
+  const narrow = useNarrow();
+  const W = narrow ? 380 : 720, H = narrow ? 260 : 290, L = narrow ? 30 : 40, R = narrow ? 40 : 104, T = 24, B = 40;
   const all = pts.flatMap((p) => p.vals);
   const step = niceStep(Math.max(...all) - Math.min(...all, 0));
   const lo = Math.max(0, Math.floor(Math.min(...all) / step) * step), hi = Math.ceil(Math.max(...all) / step) * step || step;
@@ -57,7 +71,7 @@ function LineChart({ s, metric, axis }: { s: GameState; metric: Metric; axis: Ax
   for (let v = lo; v <= hi + 1e-9; v += step) ticks.push(v);
   // generation boundaries along the turn axis
   const gens = axis === 'turn' ? pts.map((p, i) => ({ p, i })).filter(({ p, i }) => i > 0 && p.gen !== pts[i - 1].gen) : [];
-  const genEvery = Math.ceil(gens.length / 14) || 1;
+  const genEvery = Math.ceil(gens.length / (narrow ? 6 : 14)) || 1;
   // end labels: drop them where they'd collide and let the legend carry identity
   const last = pts[pts.length - 1];
   const ends = s.players.map((p) => ({ i: p.id, y: Y(last.vals[p.id]) })).sort((a, b) => a.y - b.y);
@@ -103,7 +117,7 @@ function LineChart({ s, metric, axis }: { s: GameState; metric: Metric; axis: Ax
         ))}
         {s.players.map((p) => <Marker key={p.id} i={p.id} x={X(pts.length - 1)} y={Y(last.vals[p.id])} color={p.color} />)}
         {s.players.map((p) => !crowded.has(p.id) && (
-          <text key={p.id} x={X(pts.length - 1) + 10} y={Y(last.vals[p.id]) + 4} className="chart-end">{p.name} <tspan className="chart-end-v">{last.vals[p.id]}</tspan></text>
+          <text key={p.id} x={X(pts.length - 1) + 10} y={Y(last.vals[p.id]) + 4} className="chart-end">{narrow ? '' : `${p.name} `}<tspan className="chart-end-v">{last.vals[p.id]}</tspan></text>
         ))}
         {hp && (
           <g pointerEvents="none">
@@ -140,12 +154,12 @@ function Legend({ s, bars }: { s: GameState; bars?: boolean }) {
 }
 
 const SOURCES = [
-  { k: 'tr', label: 'Terraform rating' },
-  { k: 'milestones', label: 'Milestones' },
-  { k: 'awards', label: 'Awards' },
-  { k: 'greeneries', label: 'Greeneries' },
-  { k: 'cities', label: 'Cities (next to greeneries)' },
-  { k: 'cards', label: 'Cards' },
+  { k: 'tr', label: 'Terraform rating', short: 'TR' },
+  { k: 'milestones', label: 'Milestones', short: 'Milestones' },
+  { k: 'awards', label: 'Awards', short: 'Awards' },
+  { k: 'greeneries', label: 'Greeneries', short: 'Greeneries' },
+  { k: 'cities', label: 'Cities (next to greeneries)', short: 'Cities' },
+  { k: 'cards', label: 'Cards', short: 'Cards' },
 ] as const;
 
 /** Grouped bars: one row per source of points, one bar per player (player colours, same as the lines). */
@@ -153,7 +167,8 @@ function Sources({ s }: { s: GameState }) {
   const sc = s.players.map((p) => score(s, p.id));
   const max = Math.max(1, ...sc.flatMap((x) => SOURCES.map((k) => x[k.k])));
   const n = s.players.length, bar = 10, gap = 2, rowH = n * (bar + gap) + 14;
-  const W = 720, L = 190, R = 40;
+  const narrow = useNarrow();
+  const W = narrow ? 380 : 720, L = narrow ? 84 : 190, R = narrow ? 30 : 40;
   const bx = (v: number) => (Math.max(0, v) / max) * (W - L - R);
   const H = SOURCES.length * rowH;
   return (
@@ -163,7 +178,7 @@ function Sources({ s }: { s: GameState }) {
           const y0 = r * rowH + 4;
           return (
             <g key={k.k}>
-              <text x={0} y={y0 + (n * (bar + gap)) / 2 + 4} className="chart-cat">{k.label}</text>
+              <text x={0} y={y0 + (n * (bar + gap)) / 2 + 4} className="chart-cat">{narrow ? k.short : k.label}</text>
               <line x1={L} x2={L} y1={y0 - 2} y2={y0 + n * (bar + gap)} className="chart-axis" />
               {s.players.map((p, i) => {
                 const v = sc[i][k.k], w = bx(v), y = y0 + i * (bar + gap);
@@ -235,7 +250,7 @@ function StatsTable({ s }: { s: GameState }) {
   const dash = (v: number | undefined) => (v === undefined ? '–' : v);
   return (
     <div className="table-scroll">
-      <table className="scores stats">
+      <table className="scores stats stack-sm">
         <thead>
           <tr><th>Player</th><th>Cards played</th><th>Events</th><th>Cities</th><th>Greeneries</th><th>Special tiles</th><th title="Temperature steps raised">Temp steps</th><th title="Oxygen steps raised">O₂ steps</th><th>Oceans placed</th>{venus && <th title="Venus steps raised">Venus steps</th>}{cols && <th>Colonies</th>}<th>M€ prod.</th><th>Milestones</th><th>Awards funded</th></tr>
         </thead>
@@ -243,8 +258,8 @@ function StatsTable({ s }: { s: GameState }) {
           {rows.map((r) => (
             <tr key={r.p.id} style={{ ['--pc' as string]: r.p.color }}>
               <th scope="row"><span className="swatch" />{r.p.name}<small>{r.p.corp ? CARDS[r.p.corp].name : ''}</small></th>
-              <td>{r.cards}</td><td>{r.events}</td><td>{r.cities}</td><td>{r.greeneries}</td><td>{r.special}</td>
-              <td>{dash(r.temp)}</td><td>{dash(r.oxy)}</td><td>{dash(r.ocean)}</td>{venus && <td>{dash(r.venus)}</td>}{cols && <td>{dash(r.colonies)}</td>}<td>{r.mc}</td><td>{r.ms}</td><td>{r.aw}</td>
+              <td data-label="Cards played">{r.cards}</td><td data-label="Events">{r.events}</td><td data-label="Cities">{r.cities}</td><td data-label="Greeneries">{r.greeneries}</td><td data-label="Special tiles">{r.special}</td>
+              <td data-label="Temp steps">{dash(r.temp)}</td><td data-label="O₂ steps">{dash(r.oxy)}</td><td data-label="Oceans placed">{dash(r.ocean)}</td>{venus && <td data-label="Venus steps">{dash(r.venus)}</td>}{cols && <td data-label="Colonies">{dash(r.colonies)}</td>}<td data-label="M€ prod.">{r.mc}</td><td data-label="Milestones">{r.ms}</td><td data-label="Awards funded">{r.aw}</td>
             </tr>
           ))}
         </tbody>

@@ -34,7 +34,7 @@ export interface Req {
 }
 
 /** Which box a card comes from. */
-export type CardSet = 'base' | 'corp' | 'prelude' | 'venus' | 'colonies' | 'turmoil';
+export type CardSet = 'base' | 'corp' | 'prelude' | 'venus' | 'colonies' | 'turmoil' | 'custom';
 
 export interface CardAction {
   text: string;
@@ -670,6 +670,13 @@ export function cardInGame(s: Pick<GameState, 'options'>, id: string): boolean {
   const set = CARDS[id].set;
   const ex = s.options.expansions ?? {};
   if (set === 'base') return true;
+  if (set === 'custom') {
+    const c = s.options.custom?.find((x) => x.id === id);
+    if (!c) return false;
+    // cards that raise or need Venus only come with Venus Next
+    const venus = c.req?.param === 'venus' || [...c.play, ...(c.action?.gain ?? []), ...(c.effect?.gain ?? [])].some((b) => b.k === 'venus');
+    return !venus || !!ex.venus;
+  }
   if (set === 'corp') return s.options.corporateEra;
   return !!ex[set];
 }
@@ -692,4 +699,5 @@ export function roboticTargets(s: GameState, pid: number): string[] {
 }
 // Cards whose production depends on a choice or a later tile, which a copy can't reproduce.
 const ROBOTIC_EXCLUDED = new Set(['mining-rights', 'mining-area']);
+
 

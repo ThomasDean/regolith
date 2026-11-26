@@ -6,6 +6,9 @@ import { Card } from './Card';
 import { Game } from './Game';
 import { CloudPanel } from './Cloud';
 import { Gallery } from './Gallery';
+import { CustomCards } from './CustomCards';
+import { cardsInGroups, loadPickedGroups, savePickedGroups, useLibrary } from './customLib';
+import { MAX_CUSTOM } from '../engine/custom';
 import { currentCloudId, setCloudId, startNewCloudId, useSession } from '../cloud';
 import { hostRoom, OnlinePanel, OnlineRoom } from './Online';
 import { onlineEnabled } from '../online/client';
@@ -45,8 +48,9 @@ export function App() {
   if (import.meta.env.DEV && hash === '#online-sim') return <Suspense fallback={null}><OnlineSim /></Suspense>;
   if (room) return <OnlineRoom key={room} id={room} onExit={toMenu} />;
   if (hash === '#gallery') return <Gallery onExit={toMenu} />;
+  if (hash === '#custom') return <CustomCards onExit={toMenu} />;
   if (local) return <LocalGame key={local} id={local} onExit={toMenu} />;
-  return <Menu onStart={startLocal} onOnline={openRoom} onGallery={() => navigate('/regolith#gallery')} />;
+  return <Menu onStart={startLocal} onOnline={openRoom} onGallery={() => navigate('/regolith#gallery')} onCustom={() => navigate('/regolith#custom')} />;
 }
 
 /** A hotseat game saved on this device, opened by its id. */
@@ -67,7 +71,7 @@ function LocalGame({ id, onExit }: { id: string; onExit: () => void }) {
   return <Game initial={initial} saveId={id} onExit={onExit} />;
 }
 
-function Menu({ onStart, onOnline, onGallery }: { onStart: (s: GameState, id?: string) => void; onOnline: (room: string) => void; onGallery: () => void }) {
+function Menu({ onStart, onOnline, onGallery, onCustom }: { onStart: (s: GameState, id?: string) => void; onOnline: (room: string) => void; onGallery: () => void; onCustom: () => void }) {
   const saved = useLocalSaves(regolithSaves).filter((x) => !x.over);
   const session = useSession();
   const [hosting, setHosting] = useState(false);
@@ -81,7 +85,11 @@ function Menu({ onStart, onOnline, onGallery }: { onStart: (s: GameState, id?: s
   const chooseBoard = (b: BoardId) => { setBoard(b); setMA((m) => maForBoard(m, b, ex)); };
   const chooseEx = (next: Expansions) => { setEx(next); saveEx(next); setMA((m) => maForBoard(m, board, next)); };
   const preview = useMemo(() => createGame([{ name: 'a', color: '#000', cpu: null }, { name: 'b', color: '#000', cpu: null }], { seed: 1, board }), [board]);
-  const settings = { board, milestones: ma.sel.milestones, awards: ma.sel.awards, expansions: ex };
+  const { lib } = useLibrary();
+  const [picked, setPicked] = useState<string[]>(loadPickedGroups);
+  const pick = (ids: string[]) => { setPicked(ids); savePickedGroups(ids); };
+  const custom = cardsInGroups(lib, picked).slice(0, MAX_CUSTOM);
+  const settings = { board, milestones: ma.sel.milestones, awards: ma.sel.awards, expansions: ex, ...(custom.length ? { custom } : {}) };
   const update = (i: number, patch: Partial<Seat>) => setSeats((x) => x.map((s, j) => (j === i ? { ...s, ...patch } : s)));
   const addSeat = () => setSeats((x) => {
     const color = PLAYER_COLORS.find((c) => !x.some((s) => s.color === c))!;
@@ -154,6 +162,23 @@ function Menu({ onStart, onOnline, onGallery }: { onStart: (s: GameState, id?: s
 
         <h2>Expansions</h2>
         <ExpansionPicker ex={ex} onChange={chooseEx} />
+
+        <h2>Custom cards</h2>
+        <div className="cc-pick">
+          {lib.groups.length ? (
+            <div className="exp-pick" role="group" aria-label="Custom card groups">
+              {lib.groups.map((g) => (
+                <label key={g.id} className={`exp-opt ${picked.includes(g.id) ? 'on' : ''}`}>
+                  <input type="checkbox" checked={picked.includes(g.id)} disabled={!g.cards.length}
+                    onChange={(e) => pick(e.target.checked ? [...picked, g.id] : picked.filter((x) => x !== g.id))} />
+                  <span><b>{g.name || 'Untitled'}</b><small>{g.cards.length} card{g.cards.length === 1 ? '' : 's'} shuffled into the deck</small></span>
+                </label>
+              ))}
+            </div>
+          ) : <p className="muted">Make your own cards and group them, then add groups to a game here.</p>}
+          {custom.length > 0 && <p className="muted small-print">{custom.length} custom card{custom.length === 1 ? '' : 's'} in this game{cardsInGroups(lib, picked).length > MAX_CUSTOM ? ` (the first ${MAX_CUSTOM})` : ''}.</p>}
+          <button type="button" className="btn small ghost" onClick={onCustom}>{lib.cards.length ? 'Edit custom cards' : 'Make custom cards'}</button>
+        </div>
 
         <h2>Map</h2>
         <BoardPicker board={board} onChange={chooseBoard} />

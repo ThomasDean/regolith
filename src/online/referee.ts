@@ -7,6 +7,8 @@
 // It is pure TypeScript with the storage behind an interface, so the same code runs in the
 // Supabase Edge Function (server/edge.ts) and in the tests with an in-memory store.
 import type { Action, GameState, Level } from '../engine/types';
+import { runPremoves, setPremoves } from '../engine/premoves';
+import { cleanCustomList, type CustomCard } from '../engine/custom';
 import { applyActionLogged, applyActionMut, cleanExpansions, createGame, forfeitMut } from '../engine/game';
 import { cpuAction } from '../engine/ai/cpu';
 import { decider } from '../engine/moves';
@@ -46,7 +48,7 @@ const simultaneous = (s: GameState) => (s.phase === 'setup' || s.phase === 'rese
 const PICK_BUDGET_MS = 700;
 
 /** The room's map, milestones/awards and expansions, checked: unknown maps fall back to Tharsis, bad lists are refused. */
-export function gameSettings(room: RoomRow): { board: BoardId; milestones?: string[]; awards?: string[]; expansions: ReturnType<typeof cleanExpansions> } {
+export function gameSettings(room: RoomRow): { board: BoardId; milestones?: string[]; awards?: string[]; expansions: ReturnType<typeof cleanExpansions>; custom?: CustomCard[] } {
   const st = room.settings ?? {};
   const board = BOARD_IDS.includes(st.board as BoardId) ? (st.board as BoardId) : 'tharsis';
   const expansions = cleanExpansions(st.expansions && typeof st.expansions === 'object' ? st.expansions : undefined);
@@ -54,7 +56,10 @@ export function gameSettings(room: RoomRow): { board: BoardId; milestones?: stri
     Array.isArray(xs) && xs.length === 5 && new Set(xs).size === 5 && xs.every((id) => typeof id === 'string' && maDef(id)?.kind === kind && !availability(board, id, expansions));
   if (st.milestones !== undefined && !ok(st.milestones, 'milestone')) throw new HttpError(400, 'Those milestones can’t be used');
   if (st.awards !== undefined && !ok(st.awards, 'award')) throw new HttpError(400, 'Those awards can’t be used');
-  return { board, milestones: st.milestones, awards: st.awards, expansions };
+  let custom: CustomCard[] = [];
+  try { custom = cleanCustomList(st.custom); } catch (e) { throw new HttpError(400, `Custom cards: ${(e as Error).message}`); }
+  if (st.custom && Array.isArray(st.custom) && custom.length && (st.custom as CustomCard[]).some((c) => !custom.some((x) => x.id === c?.id))) throw new HttpError(400, 'Custom cards: a card doesn’t match its id');
+  return { board, milestones: st.milestones, awards: st.awards, expansions, ...(custom.length ? { custom } : {}) };
 }
 
 export function seatOf(room: RoomRow, uid: string): number {
@@ -79,6 +84,11 @@ export function viewFor(s: GameState, seat: number): GameState {
   v.discard = v.discard.map(() => HIDDEN);
   if (v.preludeDeck) v.preludeDeck = v.preludeDeck.map(() => HIDDEN);
   if (v.turmoil) v.turmoil = { ...v.turmoil, deck: v.turmoil.deck.map(() => HIDDEN) };
+  // your queued moves are yours alone
+  if (v.premoves) {
+    v.premoves = Object.fromEntries(Object.entries(v.premoves).filter(([k]) => Number(k) === seat));
+    if (!Object.keys(v.premoves).length) delete v.premoves;
+  }
   for (const p of v.players) {
     if (p.id === seat) continue;
     p.hand = p.hand.map(() => HIDDEN);
@@ -236,6 +246,7 @@ async function step(req: PlayRequest, uid: string, store: Store, l: Loaded, now:
         log.push({ seat, a });
       }
       flush(s, pending, log);
+      log.push(...runPremoves(s));
       const saved = await commit(store, l, patchFor(room, s, pending, log), uid);
       return saved ? reply(saved, s, pending, uid) : null;
     }
@@ -254,6 +265,7 @@ async function step(req: PlayRequest, uid: string, store: Store, l: Loaded, now:
         applyActionLogged(s, a);
         log.push({ seat: d, a });
         flush(s, pending, log);
+        log.push(...runPremoves(s));
         if (s.phase === 'over') break;
         const nd = decider(s);
         // a CPU finishing its own follow-up choices (where to put the tile…) is one step
@@ -264,6 +276,18 @@ async function step(req: PlayRequest, uid: string, store: Store, l: Loaded, now:
       }
       const saved = await commit(store, l, patchFor(room, s, pending, log), uid);
       return saved ? reply(saved, s, pending, uid) : reply(room, l.state, l.pending, uid);
+    }
+
+    case 'premove': {
+      if (!l.state || room.status !== 'playing') throw new HttpError(409, 'This game is not being played');
+      if (seat < 0) throw new HttpError(403, 'You are watching this game');
+      const s = structuredClone(l.state);
+      if (s.players[seat].forfeited || s.players[seat].cpu) throw new HttpError(409, 'A CPU is playing your seat');
+      try { setPremoves(s, seat, req.list); } catch (e) { throw new HttpError(400, (e as Error).message); }
+      // already your turn: they run now
+      const log: SavePatch['actions'] = runPremoves(s);
+      const saved = await commit(store, l, patchFor(room, s, l.pending, log), uid);
+      return saved ? reply(saved, s, l.pending, uid) : null;
     }
 
     case 'seat': {
@@ -293,9 +317,10 @@ async function step(req: PlayRequest, uid: string, store: Store, l: Loaded, now:
       const pending = { ...l.pending };
       delete pending[seat];
       try { forfeitMut(s, seat); } catch (e) { throw new HttpError(422, (e as Error).message); }
+      const queued = runPremoves(s);
       const kind = s.players[seat].cpu ?? 'normal';
       const seats = room.seats.map((x, j) => (j === seat ? { ...x, kind, forfeited: true } : x));
-      const saved = await commit(store, l, patchFor(room, s, pending, [], seats), uid);
+      const saved = await commit(store, l, patchFor(room, s, pending, queued, seats), uid);
       return saved ? reply(saved, s, pending, uid) : null;
     }
 

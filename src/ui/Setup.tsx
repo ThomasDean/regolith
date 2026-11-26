@@ -2,7 +2,7 @@
 // draw, or any mix with the players' own picks locked in).
 import { useMemo, useState } from 'react';
 import { BOARD_IDS, BOARDS, type BoardId } from '../engine/board';
-import { AWARDS, BALANCED, MILESTONES, availability, boardMA, drawMA, maDef, selectionIssues, type MADef, type MASelection } from '../engine/ma';
+import { AWARDS, BALANCED, MILESTONES, availability, boardMA, conflict, drawMA, maDef, selectionIssues, type Family, type MADef, type MASelection } from '../engine/ma';
 import { EXPANSIONS, type Expansion, type Expansions } from '../engine/types';
 import { EXPANSION_LABEL } from './format';
 import { HowToPlay } from './HowToPlay';
@@ -68,6 +68,12 @@ export function BoardPicker({ board, onChange }: { board: BoardId; onChange: (b:
   );
 }
 
+/** The kinds of play milestones and awards reward; picks from one kind tend to go to the same player. */
+export const FAMILY_LABEL: Record<Family, string> = { tiles: 'Tiles', tags: 'Tags', cards: 'Cards', production: 'Production', resources: 'Resources', tr: 'Terraforming' };
+const FAMILIES = Object.keys(FAMILY_LABEL) as Family[];
+
+export const FamilyBadge = ({ f }: { f: Family }) => <span className={`fam fam-${f}`}>{FAMILY_LABEL[f]}</span>;
+
 const Lock = ({ on }: { on: boolean }) => (
   <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
     <rect x="3" y="7" width="10" height="8" rx="1.5" fill="currentColor" />
@@ -79,6 +85,9 @@ function Slot({ kind, i, id, board, st, set, ex }: { kind: 'milestones' | 'award
   const def = maDef(id)!;
   const pool: MADef[] = kind === 'milestones' ? MILESTONES : AWARDS;
   const taken = new Set(st.sel[kind]);
+  /** the other nine picks, to flag look-alikes in the list */
+  const others = [...st.sel.milestones, ...st.sel.awards].filter((x) => x !== id);
+  const close = others.filter((o) => conflict(o, id) > BALANCED.maxPair);
   const locked = st.locked.includes(id);
   const pick = (next: string) => {
     const xs = [...st.sel[kind]];
@@ -93,20 +102,27 @@ function Slot({ kind, i, id, board, st, set, ex }: { kind: 'milestones' | 'award
       <div className="ma-body">
         <label className="sr-only" htmlFor={`${kind}-${i}`}>{label}</label>
         <select id={`${kind}-${i}`} value={id} onChange={(e) => pick(e.target.value)}>
-          {[...BOARD_IDS, null].map((b) => {
-            const group = pool.filter((d) => (b ? d.boards.includes(b) : !d.boards.length));
+          {FAMILIES.map((f) => {
+            const group = pool.filter((d) => d.family === f);
             if (!group.length) return null;
             return (
-              <optgroup key={b ?? 'more'} label={b ? BOARDS[b].name : 'Expansions'}>
+              <optgroup key={f} label={FAMILY_LABEL[f]}>
                 {group.map((d) => {
                   const why = availability(board, d.id, ex);
-                  return <option key={d.id} value={d.id} disabled={(d.id !== id && taken.has(d.id)) || !!why}>{d.name}{why ? ` (${why.startsWith('Needs') ? why.toLowerCase() : 'no volcanoes here'})` : ''}</option>;
+                  const close = others.filter((o) => o !== d.id && conflict(o, d.id) > BALANCED.maxPair).map((o) => maDef(o)!.name);
+                  const from = d.boards.length ? BOARDS[d.boards[0]].name : 'expansion';
+                  return (
+                    <option key={d.id} value={d.id} disabled={(d.id !== id && taken.has(d.id)) || !!why}>
+                      {d.name} · {from}{why ? ` (${why.startsWith('Needs') ? why.toLowerCase() : 'no volcanoes here'})` : close.length ? ` (like ${close.join(', ')})` : ''}
+                    </option>
+                  );
                 })}
               </optgroup>
             );
           })}
         </select>
-        <span className="ma-text">{def.text}</span>
+        <span className="ma-text"><FamilyBadge f={def.family} /> {def.text}</span>
+        {close.length > 0 && <span className="ma-close">Close to {close.map((o) => maDef(o)!.name).join(', ')}</span>}
       </div>
     </li>
   );
@@ -129,6 +145,12 @@ export function MAPicker({ board, st, set, ex = {} }: { board: BoardId; st: MASt
         {st.locked.length > 0 && <button type="button" className="btn small ghost" onClick={() => set({ ...st, locked: [] })}>Unlock all</button>}
       </div>
       <p className="muted small-print">Shuffles draw from every map’s milestones and awards and keep look-alikes apart (no Gardener with Cultivator, no Builder with Contractor), with a spread of tiles, tags, cards, production and resources. Pick any slot yourself to lock it in.</p>
+      <div className="fam-spread" aria-label="Kinds of play across the ten">
+        {FAMILIES.map((f) => {
+          const n = [...st.sel.milestones, ...st.sel.awards].filter((id) => maDef(id)!.family === f).length;
+          return <span key={f} className={`fam-count ${issues.crowded.includes(f) ? 'crowded' : ''} ${n ? '' : 'none'}`} title={issues.crowded.includes(f) ? 'Crowded: one kind of play is rewarded too often' : undefined}><FamilyBadge f={f} /> {n}</span>;
+        })}
+      </div>
       <div className="ma-cols">
         <div>
           <h3>Milestones <span className="muted">8 M€, first 3 claimed</span></h3>
@@ -139,9 +161,10 @@ export function MAPicker({ board, st, set, ex = {} }: { board: BoardId; st: MASt
           <ol className="ma-list">{st.sel.awards.map((id, i) => <Slot key={`a${i}`} kind="awards" i={i} id={id} board={board} st={st} set={set} ex={ex} />)}</ol>
         </div>
       </div>
-      {!isOwn && issues.pairs.length > 0 && (
+      {!isOwn && (issues.pairs.length > 0 || issues.crowded.length > 0) && (
         <p className="warn" role="status">
-          Close overlap: {issues.pairs.map(([a, b]) => `${name(a)} and ${name(b)}`).join('; ')}. Players who chase one will often get the other too.
+          {issues.pairs.length > 0 && `Close overlap: ${issues.pairs.map(([a, b]) => `${name(a)} and ${name(b)}`).join('; ')}. Players who chase one will often get the other too.`}
+          {issues.crowded.length > 0 && ` Crowded: ${issues.crowded.map((f) => FAMILY_LABEL[f]).join(', ')} (too many of one kind).`}
         </p>
       )}
     </div>
