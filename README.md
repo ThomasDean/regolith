@@ -83,10 +83,11 @@ The menu's **Host online** button opens a game from the player list: the first s
 - **Dropping out.** In a game, the host's **Seats** button hands any seat to an Easy, Normal or Hard CPU, and back to its player later. Any player can **Forfeit** for good (the `forfeit` request): a Normal CPU takes the seat, it ranks last, and the game ends if one player or no human is left. Forfeiting needs the referee redeployed (the workflow does it on push to `main` when the token is set); no database change.
 - **Async friendly.** Games live on the server, so players can close the tab and come back; **Play online** lists your games and marks the ones waiting on you. Realtime pushes each change, with a slow poll as a fallback.
 - Your turn is a draft until you confirm it, online too: undo any step before confirming, except steps that reveal cards (draws, the end-of-generation deal), which ask first and lock in the turn so far.
+- **Premoves.** While you wait, queue card actions and/or "pass when my turn comes"; the server makes them for you as soon as your turn arrives, even if you've closed the app (skipped if no longer possible; a step that needs a choice stops there for you). Each player sees only their own queue. `src/engine/premoves.ts`.
 
 ### Setting it up (once)
 
-1. **Database:** run `supabase/migrations/20261019000000_regolith_online_rooms.sql`, then `20261101000000_regolith_room_settings.sql` (map and milestone/award choice) and `20261102120000_regolith_room_expansions.sql` (expansions) on the Breakthrough Music dev project (SQL editor, or ask Claude to apply it). It adds `regolith.rooms` (members can read their own rooms; realtime is on) and `regolith.room_states` (server only), plus the lobby functions.
+1. **Database:** run `supabase/migrations/20261019000000_regolith_online_rooms.sql`, then `20261101000000_regolith_room_settings.sql` (map and milestone/award choice) `20261102120000_regolith_room_expansions.sql` (expansions) and `20261126000000_regolith_custom_cards.sql` (custom cards in rooms, and each player's card library) on the Breakthrough Music dev project (SQL editor, or ask Claude to apply it). It adds `regolith.rooms` (members can read their own rooms; realtime is on) and `regolith.room_states` (server only), plus the lobby functions.
 2. **Edge Function:** either add a `SUPABASE_ACCESS_TOKEN` repository secret (supabase.com → Account → Access Tokens) so `.github/workflows/deploy-edge.yml` deploys on every engine change, or run `npx supabase login` then `npm run deploy:edge` locally. It deploys with JWT verification off because it checks the caller's sign-in itself.
 3. **Guests:** Authentication → Sign In / Providers → turn on **Allow anonymous sign-ins**. Without it, everyone has to sign in with Google first.
 
@@ -155,6 +156,14 @@ Card numbers follow the published game; card text is Regolith's own wording. Mil
 The rules live in `src/engine/game.ts` (prelude phase, the steps after production, the new ops), `src/engine/colonies.ts` and `src/engine/turmoil.ts` (tiles, parties and events), and the card lists in `src/engine/cards-prelude.ts`, `cards-venus.ts`, `cards-colonies.ts` and `cards-turmoil.ts`. CPUs value Venus steps, card resources that convert (floaters to Venus or TR, microbes to M€…), colonies by their bonuses and expected trades, trade fleets by the trades still to come, and delegates by the chairman's TR and influence; choices like which tile, which party or what World Government raises are simulated move by move. A leading CPU prefers World Government raises that end the game sooner, a trailing one prefers Venus.
 
 `tests/expansions.test.ts` covers each expansion's rules; `tests/coverage.test.ts` also plays 60 random games with all four on; `npx tsx scripts/fuzz-expansions.ts 8` plays random games over all 15 combinations of expansions and maps, checking resources, oceans and delegate counts; `npx tsx scripts/expansions.ts hard,normal,easy 12 [prelude,venus,colonies,turmoil] [map]` plays CPU games.
+
+## Custom cards
+
+**Custom cards** in the menu opens an editor for your own project cards: name, type (automated, active, event), cost, up to 3 tags, a requirement (a global parameter at least/at most, and/or a number of your tags), VP (fixed, or 1 per N resources on the card), and effects from a menu: resources and production (up or down), TR, temperature, oxygen, Venus, oceans, cities, greeneries, card draw, resources on the card, removing resources from any player, lowering any player's production. Active cards can also have a once-per-generation action (pay M€, resources or resources from the card) and an ongoing effect (when you or anyone plays a tag, places a city, a greenery or an ocean).
+
+Sort cards into **groups**, then tick groups under *Custom cards* when setting up a game: their cards are shuffled into the deck for everyone. The library is kept in the browser, and in your account when signed in. Online, the cards travel with the game, so friends don't need them; the referee re-checks every card when the game starts.
+
+Each card is plain data (`src/engine/custom.ts`) turned into an ordinary card definition at load time, so the rules, the CPUs, card symbols and art treat it like any other card. Ids come from the card's content, so an edited card is a new card and games using older versions keep working. Cards that touch Venus only appear with Venus Next. `tests/custom.test.ts` covers the checks and plays whole CPU games with custom cards in the deck.
 
 ## End-of-game analytics
 

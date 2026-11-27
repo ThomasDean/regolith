@@ -1,7 +1,7 @@
 // Online play: the menu panel (guest sign-in, join by code, your games), the lobby where
 // friends gather before the host starts, and the screen that runs a game from server views.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Action, GameState, Level } from '../engine/types';
+import type { Action, GameState, Level, Premove } from '../engine/types';
 import { useSession } from '../cloud';
 import {
   createRoom, joinCodeFromUrl, joinLink, joinRoom, leaveRoom, myRooms, onlineEnabled, play, saveName, savedName, setLastRoom, signInGuest,
@@ -133,11 +133,12 @@ function RoomSetup({ row, host, busy, save }: { row: RoomRow; host: boolean; bus
     return row.settings?.milestones && row.settings.awards ? { sel: { milestones: row.settings.milestones, awards: row.settings.awards }, locked: [], mode: 'custom' } : own;
   });
   const names = (ids: string[] | undefined, fallback: string[]) => (ids ?? fallback).map((id) => maDef(id)?.name ?? id).join(', ');
-  const update = (b: BoardId, st: MAState, nextEx = ex) => { setMA(st); save({ board: b, milestones: st.sel.milestones, awards: st.sel.awards, expansions: nextEx }); };
+  // the host's custom cards stay with the room when the map or milestones change
+  const update = (b: BoardId, st: MAState, nextEx = ex) => { setMA(st); save({ board: b, milestones: st.sel.milestones, awards: st.sel.awards, expansions: nextEx, ...(row.settings?.custom ? { custom: row.settings.custom } : {}) }); };
   const on = EXPANSIONS.filter((e) => ex[e]).map((e) => EXPANSION_LABEL[e]);
   const summary = (
     <p className="muted">
-      <b>{BOARDS[board].name}</b>, {on.length ? `with ${on.join(', ')}` : 'no expansions'}. Milestones: {names(row.settings?.milestones, ma.sel.milestones)}. Awards: {names(row.settings?.awards, ma.sel.awards)}.
+      <b>{BOARDS[board].name}</b>, {on.length ? `with ${on.join(', ')}` : 'no expansions'}. Milestones: {names(row.settings?.milestones, ma.sel.milestones)}. Awards: {names(row.settings?.awards, ma.sel.awards)}.{row.settings?.custom?.length ? ` Plus ${row.settings.custom.length} custom card${row.settings.custom.length === 1 ? '' : 's'}.` : ''}
     </p>
   );
   if (!host) return summary;
@@ -272,6 +273,7 @@ function OnlineGame({ row, onExit }: { row: RoomRow; onExit: () => void }) {
   useEffect(() => () => { if (retry.current) clearTimeout(retry.current); }, []);
   const setSeat = useCallback(async (seat: number, kind: 'human' | Level) => { take(await play({ op: 'seat', room: roomId, seat, kind })); }, [roomId, take]);
   const forfeit = useCallback(async () => { take(await play({ op: 'forfeit', room: roomId })); }, [roomId, take]);
+  const premove = useCallback(async (list: Premove[]) => { take(await play({ op: 'premove', room: roomId, list })); }, [roomId, take]);
 
   // the Home Screen badge counts games waiting on you, so recount when this one changes hands
   const waitingKey = `${row.status}:${row.waiting.join(',')}`;
@@ -289,7 +291,7 @@ function OnlineGame({ row, onExit }: { row: RoomRow; onExit: () => void }) {
   }
   const link: OnlineLink = {
     room: roomId, code: reply.room.code, seat: reply.seat, host: reply.room.host === uid, version: reply.room.version, view: reply.view as GameState,
-    seats: reply.room.seats, waiting: reply.room.waiting, queued: reply.queued, send, advance, setSeat, forfeit,
+    seats: reply.room.seats, waiting: reply.room.waiting, queued: reply.queued, send, advance, setSeat, forfeit, premove,
   };
   return <Game initial={reply.view} online={link} onExit={onExit} />;
 }

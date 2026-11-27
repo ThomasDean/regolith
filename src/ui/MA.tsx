@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { Action, GameState, Payment } from '../engine/types';
 import { autoPay, awardCost, awardPlaces, canClaimMilestone, canFundAward, gameAwards, gameMilestones, MILESTONE_COST } from '../engine/queries';
 import { Dialog } from './Dialog';
+import { FamilyBadge } from './Setup';
 
 type Pick = { kind: 'milestone' | 'award'; id: string };
 
@@ -72,7 +73,7 @@ function MADialog({ s, pick, viewer, canAct, onClose, act }: { s: GameState; pic
           </button>
         )}
       </>}>
-      <p className="ma-kind">{isM ? 'Milestone' : 'Award'}: {def.text}{isM ? '' : '. Funded awards pay 5 VP to first place and 2 VP to second at the end.'}{isM ? '. Worth 5 VP.' : ''}</p>
+      <p className="ma-kind"><FamilyBadge f={def.family} /> {isM ? 'Milestone' : 'Award'}: {def.text}{isM ? '' : '. Funded awards pay 5 VP to first place and 2 VP to second at the end.'}{isM ? '. Worth 5 VP.' : ''}</p>
       <p className={owner ? 'ma-status owned' : 'ma-status'} style={owner ? { ['--pc' as string]: s.players[owner.pid].color } : undefined}>
         {owner && <span className="swatch" aria-hidden="true" />}{status}
       </p>

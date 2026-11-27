@@ -2,6 +2,7 @@
 // deck reshuffled so it can't peek), answers any follow-up prompts, and scores the resulting
 // position with an engine-aware evaluation. Difficulty changes how much it weighs opponents,
 // whether it values tag synergies, how noisy its judgement is, and whether it looks ahead.
+import { ensureCustom } from '../custom';
 import type { Action, GameState, Level, Op, Prompt } from '../types';
 import { CARDS } from '../cards';
 import { P, tagCount } from '../helpers';
@@ -69,6 +70,7 @@ export function evaluate(s: GameState, pid: number, cfg: CpuConfig, clock: Clock
 
 /** Pick the next action for whichever CPU must decide now. */
 export function cpuAction(s: GameState, level: Level, rnd: Rnd = stateRnd(s)): Action {
+  ensureCustom(s);
   const pid = s.prompt ? s.prompt.pid : s.active;
   const cfg = seatConfig(s, pid, level);
   if (cfg.blunder && rnd() < cfg.blunder && s.phase === 'action' && !s.prompt) {

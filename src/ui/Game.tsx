@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Action, GameState, Level, Payment, Prompt, StdProject } from '../engine/types';
+import type { Action, GameState, Level, Payment, Premove, Prompt, StdProject } from '../engine/types';
 import { maxTemp } from '../engine/board';
 import { Analytics } from './Analytics';
 import { applyAction, heatAvailable } from '../engine/game';
 import { CARDS } from '../engine/cards';
 import { inPlay } from '../engine/helpers';
 import { cpuAction } from '../engine/ai/cpu';
+import { premovesOf, runPremoves, setPremoves } from '../engine/premoves';
+import { ensureCustom } from '../engine/custom';
 import {
   activeCards, autoPay, availableSpaces, canPlayCard, canSP,
   cardActionAvailable, cardCost, checkPayment, greeneryCost, maxSpend, opsFeasible, payLimitsForCard,
@@ -34,7 +36,7 @@ import type { SeatRow } from '../online/protocol';
 import { regolithSaves } from './saves';
 import { NextGameButton } from '../shell/NextGame';
 import { ForfeitDialog, forfeitText } from '../shell/Forfeit';
-import { forfeit as forfeitLocal, ranking } from '../engine/game';
+import { forfeit as forfeitLocal, ranking, turnOrder } from '../engine/game';
 
 /** What an online game gives the board: the server's view for your seat and a way to move. */
 export interface OnlineLink {
@@ -55,6 +57,8 @@ export interface OnlineLink {
   setSeat: (seat: number, kind: 'human' | Level) => Promise<void>;
   /** give up your seat for good */
   forfeit: () => Promise<void>;
+  /** queue moves for your next turn */
+  premove: (list: Premove[]) => Promise<void>;
 }
 
 interface Entry { s: GameState; actor: number | null }
@@ -66,6 +70,8 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
   const [hist, setHist] = useState<Entry[]>([{ s: online?.view ?? initial, actor: null }]);
   /** the game as the server (or this device's save) has it */
   const live = hist[hist.length - 1].s;
+  // the game's custom cards must be in the catalogue before anything shows them
+  ensureCustom(live);
   // your turn is played as a draft first: every step can be undone until you confirm the turn,
   // except steps that reveal cards (draws), which are confirmed on their own and lock it in
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -97,6 +103,7 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
       const cur = h[h.length - 1].s;
       try {
         const next = applyAction(cur, a);
+        runPremoves(next);
         setError(null);
         return [...h.slice(-80), { s: next, actor: deciderOf(cur) }];
       } catch (e) {
@@ -172,6 +179,17 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
     if (online ? draft.version !== liveVersion : draft.base !== live) setDraft(null);
   }, [live, liveVersion, draft, online]);
   const drafting = !!draft && draft.steps.length > 0 && !draft.committing;
+
+  // ---- premoves: moves queued for your next turn ----
+  const [, bumpQueue] = useState(0);
+  const setQueue = (list: Premove[]) => {
+    if (viewer === null) return;
+    if (online) { online.premove(list).catch((e) => setError((e as Error).message)); return; }
+    // queued moves only matter once your turn comes (the strip shows while you wait), so they're
+    // kept on the current state in place: a new state would restart the CPU's pending move
+    try { setPremoves(live, viewer, list); } catch (e) { setError((e as Error).message); }
+    bumpQueue((x) => x + 1);
+  };
   const turnReady = drafting && (deciderOf(s) !== viewer || s.phase !== draft!.base.phase || s.generation !== draft!.base.generation);
 
   // online: each newer server view becomes the next step, so effects play as they do locally
@@ -251,7 +269,8 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
       if (e.k === 'action' && e.pid !== viewer && !ev.some((x) => x.k === 'pass' || x.k === 'tile' || x.k === 'param')) pushToast({ pid: e.pid, tone: 'info', text: e.text });
       if (e.k === 'generation' && fxOn) {
         const mine = viewer !== null ? e.production.find((x) => x.pid === viewer) : undefined;
-        setBanner({ key: ++fxKey.current, tone: 'gen', title: `Generation ${e.gen}`, sub: mine ? `Production: you collected ${mine.mc} M€` : 'Production paid out' });
+        const first = s.firstPlayer === viewer && !s.players[s.firstPlayer].cpu ? 'You go first' : `${s.players[s.firstPlayer].name} goes first`;
+        setBanner({ key: ++fxKey.current, tone: 'gen', title: `Generation ${e.gen}`, sub: `${mine ? `You collected ${mine.mc} M€` : 'Production paid out'} · ${first}` });
         bannered = true;
         if (cpuSpeed > 120) holdRef.current = Math.max(holdRef.current, 1500);
       }
@@ -391,6 +410,7 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
       <header className="topbar">
         <div className="brand">Regolith</div>
         <div className="gen">Generation <b>{s.generation}</b></div>
+        <TurnOrder s={view} viewer={viewer} />
         <Status s={s} viewer={viewer} online={online} awaiting={turnReady} />
         <div className="topbar-tools">
           {session && cloud !== 'idle' && (
@@ -436,18 +456,19 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
             {spacePrompt && <div className="place-banner" role="status">{spacePrompt.title}: choose a highlighted space.</div>}
             <Board s={view} options={spacePrompt?.options} onPick={(id) => act({ t: 'answer', space: id })} fresh={fresh} pulse={fxOn ? pulse : null} />
           </div>
+          <MAPanel s={view} viewer={viewer} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} act={act} />
         </div>
 
         <aside className="side">
           <Players s={view} viewer={viewer} onView={setViewCards} queued={online?.queued} />
-          <MAPanel s={view} viewer={viewer} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} act={act} />
           <ColoniesPanel s={view} viewer={viewer} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} act={act} />
           <TurmoilPanel s={view} viewer={viewer} canAct={canAct && s.phase === 'action' && !s.prompt && !s.pendingAction} act={act} />
         </aside>
 
         <section className="desk">
           {me && !over && s.phase === 'action' && (
-            <ActionBar s={s} pid={me.id} myTurn={canAct && !s.prompt && !s.pendingAction} act={act} panel={panel} setPanel={setPanel} />
+            <ActionBar s={s} pid={me.id} myTurn={canAct && !s.prompt && !s.pendingAction} act={act} panel={panel} setPanel={setPanel}
+              queue={!myTurn && !draft && !me.passed && !me.cpu && !replay ? { list: premovesOf(live, me.id), set: setQueue } : undefined} />
           )}
           {me && s.phase === 'finalGreenery' && canAct && !s.prompt && (
             <div className="final-bar">
@@ -531,6 +552,28 @@ export function Game({ initial, onExit, online, saveId }: { initial: GameState; 
       <LogPanel s={view} viewer={viewer} onReplay={replay ? undefined : startReplay} catchUp={replay ? 0 : catchUp} onDismissCatchUp={() => setMissed(null)} />
     </div>
     </FxContext.Provider>
+  );
+}
+
+// ---------------- turn order ----------------
+/** Who plays in what order this generation: the first player is marked, the one deciding is lit. */
+function TurnOrder({ s, viewer }: { s: GameState; viewer: number | null }) {
+  if (s.phase === 'setup' || s.phase === 'over') return null;
+  const d = deciderOf(s);
+  return (
+    <ol className="turn-order" aria-label="Turn order this generation">
+      {turnOrder(s).map((pid, i) => {
+        const p = s.players[pid];
+        const me = pid === viewer && !p.cpu;
+        return (
+          <li key={pid} className={`${pid === d ? 'now' : ''} ${p.passed && s.phase === 'action' ? 'passed' : ''}`} style={{ ['--pc' as string]: p.color }}
+            title={`${i === 0 ? 'Goes first this generation. ' : ''}${p.name}${p.passed && s.phase === 'action' ? ' (passed)' : ''}`}>
+            {i === 0 && <span className="first-mark" aria-label="first player">1st</span>}
+            <span className="swatch" aria-hidden="true" />{me ? 'You' : p.name}
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
@@ -653,14 +696,40 @@ const SP_EFFECT: Record<StdProject, string> = {
 /** A card's action as a symbol line, if it has one. */
 const actionLine = (id: string) => cardRows(id).find((r) => r.kind === 'action');
 
-function ActionBar({ s, pid, myTurn, act, panel, setPanel }: { s: GameState; pid: number; myTurn: boolean; act: (a: Action) => void; panel: string | null; setPanel: (p: null | 'projects' | 'sell' | 'confirmPass') => void }) {
+function ActionBar({ s, pid, myTurn, act, panel, setPanel, queue }: { s: GameState; pid: number; myTurn: boolean; act: (a: Action) => void; panel: string | null; setPanel: (p: null | 'projects' | 'sell' | 'confirmPass') => void; queue?: { list: Premove[]; set: (l: Premove[]) => void } }) {
   const p = s.players[pid];
   const actions = activeCards(s, pid).filter((c) => c.action);
+  const queued = (id: string) => !!queue?.list.some((m) => m.t === 'cardAction' && m.card === id);
+  const passQueued = !!queue?.list.some((m) => m.t === 'pass');
+  const toggleCard = (id: string) => queue && queue.set(queued(id)
+    ? queue.list.filter((m) => !(m.t === 'cardAction' && m.card === id))
+    : [...queue.list.filter((m) => m.t !== 'pass'), { t: 'cardAction', card: id }, ...(passQueued ? [{ t: 'pass' } as Premove] : [])]);
+  const togglePass = () => queue && queue.set(passQueued ? queue.list.filter((m) => m.t !== 'pass') : [...queue.list, { t: 'pass' }]);
   const helion = p.corp === 'helion';
   const payHelion = (cost: number): Payment | undefined => (helion ? autoPay(s, pid, cost, { steel: false, titanium: false, heat: true }) ?? undefined : undefined);
   return (
     <section className="actionbar" aria-label="Actions">
-      <div className="ab-group">
+      {queue && (
+        <div className="premoves" aria-label="Moves queued for your turn">
+          <h3>While you wait <span className="muted">queued moves are made for you when your turn comes, in this order</span></h3>
+          <div className="chips">
+            {actions.map((c) => {
+              const used = p.usedActions.includes(c.id);
+              return (
+                <button key={c.id} type="button" className={`btn small ghost pm-chip ${queued(c.id) ? 'on' : ''}`} aria-pressed={queued(c.id)} disabled={used && !queued(c.id)}
+                  title={used ? 'Already used this generation' : c.action!.text} onClick={() => toggleCard(c.id)}>
+                  {queued(c.id) ? `${queue.list.findIndex((m) => m.t === 'cardAction' && m.card === c.id) + 1}. ` : '+ '}{c.name}
+                </button>
+              );
+            })}
+            <label className={`pm-pass ${passQueued ? 'on' : ''}`}>
+              <input type="checkbox" checked={passQueued} onChange={togglePass} /> Pass when my turn comes{passQueued && queue.list.length > 1 ? ' (after the actions)' : ''}
+            </label>
+          </div>
+          {queue.list.length > 0 && <p className="muted small-print">Skipped if no longer possible. A step that needs a choice stops there for you. Cleared at the end of the generation.</p>}
+        </div>
+      )}
+      <div className="ab-group ab-convert">
         <h3>Convert</h3>
         <button type="button" className="btn small sp-btn" disabled={!myTurn || p.res.plants < greeneryCost(s, pid) || !availableSpaces(s, pid, 'greenery', 'greenery').length} onClick={() => act({ t: 'plants' })}
           aria-label={`${greeneryCost(s, pid)} plants to greenery`} title={`${greeneryCost(s, pid)} plants → greenery`}>
@@ -899,13 +968,13 @@ function GameOver({ s, onExit }: { s: GameState; onExit: () => void }) {
         </svg>
         <p>{s.endedBy === 'forfeit' ? `The game ended early in generation ${s.generation} after players forfeited.` : `Mars was terraformed in ${s.generation} generations.`} {rows[0].p.name} finishes with {rows[0].sc.total} VP.</p>
       </div>
-      <table className="scores">
+      <table className="scores stack-sm">
         <thead><tr><th>Player</th><th>TR</th><th>Milestones</th><th>Awards</th><th>Greeneries</th><th>Cities</th><th>Cards</th><th>Total</th></tr></thead>
         <tbody>
           {rows.map(({ p, sc }) => (
             <tr key={p.id} style={{ ['--pc' as string]: p.color }}>
               <th scope="row"><span className="swatch" />{p.name}{p.forfeited && <span className="forfeit-tag"> · forfeited</span>}<small>{p.corp ? CARDS[p.corp].name : ''}</small></th>
-              <td>{sc.tr}</td><td>{sc.milestones}</td><td>{sc.awards}</td><td>{sc.greeneries}</td><td>{sc.cities}</td><td>{sc.cards}</td><td><b>{sc.total}</b></td>
+              <td data-label="TR">{sc.tr}</td><td data-label="Milestones">{sc.milestones}</td><td data-label="Awards">{sc.awards}</td><td data-label="Greeneries">{sc.greeneries}</td><td data-label="Cities">{sc.cities}</td><td data-label="Cards">{sc.cards}</td><td data-label="Total" className="total"><b>{sc.total}</b></td>
             </tr>
           ))}
         </tbody>

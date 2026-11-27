@@ -135,6 +135,15 @@ describe('online rooms in the database', () => {
     await as(HOST, `select regolith.leave_room($1)`, [r.r.id]);
   });
 
+  it('keeps the host’s custom cards in the settings', async () => {
+    const card = { id: 'cc-x', name: 'Algae Vats', type: 'automated', cost: 9, tags: ['plant'], play: [{ k: 'prod', r: 'plants', n: 2 }] };
+    const settings = { board: 'tharsis', custom: Array.from({ length: 40 }, (_, i) => ({ ...card, id: `cc-${i}` })) };
+    const [r] = await as<{ r: { id: string } }>(HOST, `select regolith.create_room($1::jsonb, true, $2::jsonb) as r`, [seats, JSON.stringify(settings)]);
+    const [row] = await as<{ settings: { custom: unknown[] } }>(HOST, `select settings from regolith.rooms where id = $1`, [r.r.id]);
+    expect(row.settings.custom).toHaveLength(40);
+    await as(HOST, `select regolith.leave_room($1)`, [r.r.id]);
+  });
+
   it('closes a lobby when its host leaves', async () => {
     const [r] = await as<{ r: { id: string } }>(HOST, `select regolith.create_room($1::jsonb, true) as r`, [seats]);
     await as(HOST, `select regolith.leave_room($1)`, [r.r.id]);
@@ -259,5 +268,18 @@ describe('Fathom rooms in the database', () => {
     const [r] = await as<{ r: { id: string } }>(HOST, `select fathom.create_room($1::jsonb) as r`, [fseats]);
     await as(HOST, `select fathom.leave_room($1)`, [r.r.id]);
     expect((await db.query(`select id from fathom.rooms where id = $1`, [r.r.id])).rows).toHaveLength(0);
+  });
+});
+
+describe('custom card libraries in the database', () => {
+  it('keeps each player’s library to themselves', async () => {
+    await expect(as(null, `select regolith.get_card_library()`)).rejects.toThrow(/permission denied/);
+    expect((await as<{ l: object }>(HOST, `select regolith.get_card_library() as l`))[0].l).toEqual({});
+    const lib = { cards: [{ id: 'cc-1', name: 'Algae Vats' }], groups: [{ id: 'g1', name: 'Mine', cards: ['cc-1'] }] };
+    await as(HOST, `select regolith.put_card_library($1::jsonb)`, [JSON.stringify(lib)]);
+    expect((await as<{ l: object }>(HOST, `select regolith.get_card_library() as l`))[0].l).toEqual(lib);
+    expect((await as<{ l: object }>(FRIEND, `select regolith.get_card_library() as l`))[0].l).toEqual({});
+    await expect(as(HOST, `select * from regolith.card_library`)).rejects.toThrow(/permission denied/);
+    await expect(as(HOST, `select regolith.put_card_library('[1]'::jsonb)`)).rejects.toThrow(/Bad card library/);
   });
 });
